@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-auth-compat.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-database-compat.min.js"></script>
 <style>
   :root{
@@ -268,6 +269,35 @@
     font-size: 13.5px;
   }
 
+  /* Login screen */
+  .login-wrap{
+    max-width: 360px;
+    margin: 90px auto 0;
+    padding: 0 20px;
+  }
+  .login-wrap h1{
+    font-size: 24px;
+    margin: 0 0 6px 0;
+  }
+  .login-wrap p{
+    color: var(--text-muted);
+    font-size: 13.5px;
+    margin: 0 0 24px 0;
+  }
+  .login-form{
+    display:flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .login-form input{ width: 100%; }
+  .login-form button{ width: 100%; margin-top: 4px; }
+  .login-error{
+    color: var(--red);
+    font-size: 12.5px;
+    margin-top: 4px;
+    min-height: 16px;
+  }
+
   @media (max-width: 560px){
     .ticket-row{
       grid-template-columns: 1fr;
@@ -292,6 +322,7 @@ const firebaseConfig = {
   appId: "1:832135101384:web:8f9e8fca1a8d8822ec5efd"
 };
 firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
 const db = firebase.database();
 const techsRef = db.ref('dispatch/techs');
 const ticketsRef = db.ref('dispatch/tickets');
@@ -299,11 +330,63 @@ const metaRef = db.ref('dispatch/meta');
 const seededRef = db.ref('dispatch/seeded');
 
 const DEFAULT_TECH_NAMES = ['Andy', 'Brian', 'Andrew', 'Arpita', 'Chris'];
+let appStarted = false;
 
 function todayKey(){
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
+
+/* ---------- Auth gate ---------- */
+auth.onAuthStateChanged(user => {
+  if(user){
+    renderLoading();
+    if(!appStarted){
+      appStarted = true;
+      startApp();
+    }
+  } else {
+    renderLogin();
+  }
+});
+
+function renderLoading(){
+  document.getElementById('app').innerHTML = '<div class="loading">Connecting to the dispatch board…</div>';
+}
+
+function renderLogin(errorMsg){
+  document.getElementById('app').innerHTML = `
+    <div class="login-wrap">
+      <h1>Dispatch</h1>
+      <p>Sign in with the team login to view and update the board.</p>
+      <div class="login-form">
+        <input type="email" id="login-email" placeholder="Email" autocomplete="username" />
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+        <button class="primary" id="login-btn">Sign in</button>
+        <div class="login-error">${errorMsg ? escapeHtml(errorMsg) : ''}</div>
+      </div>
+    </div>
+  `;
+  const doLogin = () => {
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+    if(!email || !password) return;
+    auth.signInWithEmailAndPassword(email, password).catch(err => {
+      renderLogin('Wrong email or password — try again.');
+    });
+  };
+  document.getElementById('login-btn').onclick = doLogin;
+  document.getElementById('login-password').onkeydown = (e) => { if(e.key === 'Enter') doLogin(); };
+}
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+/* ---------- Everything below only runs once someone is signed in ---------- */
+function startApp(){
 
 /* Seed default data once, safely even if multiple people load it for the first time at once */
 seededRef.transaction(current => current ? undefined : true, (err, committed) => {
@@ -317,6 +400,7 @@ seededRef.transaction(current => current ? undefined : true, (err, committed) =>
     db.ref().update(updates);
   }
 });
+
 
 /* ---------- Local mirror of the shared data ---------- */
 let techs = {};
@@ -361,11 +445,6 @@ function allTechEntriesSorted(){
 }
 function ticketEntriesSorted(){
   return Object.entries(tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
-}
-function escapeHtml(s){
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
 }
 function fmtTime(iso){
   const d = new Date(iso);
@@ -501,7 +580,6 @@ function render(){
             <span class="num">${i+1}</span>
             <span class="name">${escapeHtml(t.name)}</span>
             <button class="toggle-skip" data-action="toggle-tech" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '⏸' : '▶'}</button>
-            <button data-action="remove-tech" data-id="${id}" title="Remove">✕</button>
           </div>`;
       }).join('')
     : '<div style="color:var(--text-dim); font-size:13.5px;">No techs yet — add your team below.</div>';
@@ -617,9 +695,6 @@ function wireEvents(){
   app.querySelectorAll('[data-action="toggle-tech"]').forEach(btn => {
     btn.onclick = () => toggleTechActive(btn.dataset.id);
   });
-  app.querySelectorAll('[data-action="remove-tech"]').forEach(btn => {
-    btn.onclick = () => removeTech(btn.dataset.id);
-  });
   app.querySelectorAll('[data-action="reassign"]').forEach(sel => {
     sel.onchange = () => reassignTicket(sel.dataset.id, sel.value);
   });
@@ -638,6 +713,8 @@ function wireEvents(){
 /* Safety-net full refresh every 2 minutes, in case a connection silently drops.
    Live changes already appear instantly via the Firebase listeners above. */
 setInterval(() => location.reload(), 2 * 60 * 1000);
+
+} /* end startApp */
 </script>
 </body>
 </html>
