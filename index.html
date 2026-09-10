@@ -83,6 +83,16 @@
   }
   .sync-status.live .sync-dot{ background: var(--green); }
   .sync-status.offline .sync-dot{ background: var(--red); }
+  .signout-link{
+    background:none; border:none; cursor:pointer;
+    color: var(--text-dim);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 11px;
+    text-decoration: underline;
+    padding: 0;
+    margin-top: 6px;
+  }
+  .signout-link:hover{ color: var(--text-muted); }
 
   section{ margin-bottom: 30px; }
   section h2{
@@ -606,6 +616,7 @@ function render(){
       <div class="count-badge">
         <b>${ticketCount}</b>tickets
         <div class="sync-status ${isLive ? 'live' : 'offline'}"><span class="sync-dot"></span>${isLive ? 'synced' : 'reconnecting…'}</div>
+        <button class="signout-link" data-action="sign-out">Sign out</button>
       </div>
     </header>
 
@@ -696,6 +707,10 @@ function wireEvents(){
   const resetBtn = app.querySelector('[data-action="reset-tickets"]');
   if(resetBtn){
     resetBtn.onclick = resetTickets;
+  }
+  const signOutBtn = app.querySelector('[data-action="sign-out"]');
+  if(signOutBtn){
+    signOutBtn.onclick = () => { auth.signOut().then(() => location.reload()); };
   }
 }
 
