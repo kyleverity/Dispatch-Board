@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-database-compat.min.js"></script>
+<style>
+  :root{
+    --bg: #12151B;
+    --panel: #191E26;
+    --panel-2: #1F2530;
+    --border: #2A313D;
+    --text: #E7EAEF;
+    --text-muted: #7C8698;
+    --text-dim: #4E5766;
+    --amber: #E0A458;
+    --amber-dim: rgba(224,164,88,0.14);
+    --red: #C1543C;
+    --red-dim: rgba(193,84,60,0.14);
+    --blue: #5B8DBF;
+    --blue-dim: rgba(91,141,191,0.14);
+    --green: #5A9E6F;
+    --green-dim: rgba(90,158,111,0.14);
+  }
+  *{ box-sizing: border-box; }
+  html,body{
+    margin:0; padding:0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono{ font-family: 'IBM Plex Mono', monospace; }
+
+  #app{
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 36px 20px 80px;
+  }
+
+  header.top{
+    display:flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+  }
+  header.top h1{
+    font-size: 26px;
+    font-weight: 700;
+    margin: 0 0 4px 0;
+    letter-spacing: -0.01em;
+  }
+  header.top p{
+    margin:0;
+    color: var(--text-muted);
+    font-size: 13.5px;
+  }
+  .count-badge{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--text-muted);
+    text-align: right;
+  }
+  .count-badge b{ color: var(--text); font-size: 20px; display:block; }
+  .sync-status{
+    font-size: 11px;
+    margin-top: 6px;
+    display:flex;
+    align-items:center;
+    gap:5px;
+    justify-content:flex-end;
+  }
+  .sync-dot{
+    width:6px; height:6px; border-radius:50%;
+    background: var(--text-dim);
+  }
+  .sync-status.live .sync-dot{ background: var(--green); }
+  .sync-status.offline .sync-dot{ background: var(--red); }
+
+  section{ margin-bottom: 30px; }
+  section h2{
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin: 0 0 12px 0;
+    letter-spacing: 0.02em;
+  }
+
+  /* Rotation strip */
+  .rotation-strip{
+    display:flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .tech-chip{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-size: 13.5px;
+    transition: border-color .15s, background .15s;
+  }
+  .tech-chip .num{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .tech-chip.on-deck{
+    border-color: var(--amber);
+    background: var(--amber-dim);
+  }
+  .tech-chip.on-deck .num{ color: var(--amber); }
+  .tech-chip.skipped{
+    opacity: 0.45;
+  }
+  .tech-chip.skipped .name{ text-decoration: line-through; }
+  .tech-chip button{
+    background:none; border:none; cursor:pointer;
+    color: var(--text-dim);
+    font-size: 12px;
+    padding: 2px 4px;
+    line-height:1;
+  }
+  .tech-chip button:hover{ color: var(--text); }
+  .tech-chip .toggle-skip{
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .add-tech-row{
+    display:flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  input, select{
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 9px 11px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13.5px;
+    outline: none;
+  }
+  input:focus, select:focus{ border-color: var(--amber); }
+  input::placeholder{ color: var(--text-dim); }
+
+  button.primary{
+    background: var(--amber);
+    color: #1A1206;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 16px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  button.primary:hover{ filter: brightness(1.08); }
+  button.primary:disabled{
+    background: var(--panel-2);
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+  button.ghost{
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13.5px;
+    cursor:pointer;
+  }
+  button.ghost:hover{ color: var(--text); border-color: var(--text-dim); }
+
+  /* New ticket form */
+  .ticket-form{
+    display:flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ticket-form input[type=text]{ flex: 1; min-width: 200px; }
+
+  /* Ticket list */
+  .ticket-row{
+    display:grid;
+    grid-template-columns: 62px 1fr auto auto auto 28px;
+    align-items:center;
+    gap: 12px;
+    padding: 13px 4px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+  }
+  .ticket-row:first-of-type{ border-top: 1px solid var(--border); }
+  .ticket-id{
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .ticket-title{ min-width:0; }
+  .ticket-title .t{
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ticket-title .meta{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .priority-tag{
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .priority-Low{ color: var(--text-muted); background: var(--panel-2); }
+  .priority-Normal{ color: var(--blue); background: var(--blue-dim); }
+  .priority-High{ color: var(--amber); background: var(--amber-dim); }
+  .priority-Urgent{ color: var(--red); background: var(--red-dim); }
+
+  .assigned-to{
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-size: 13px;
+  }
+  select.status-select{
+    padding: 6px 8px;
+    font-size: 12.5px;
+  }
+  .status-Open{ color: var(--text-muted); }
+  .status-In\ Progress{ color: var(--blue); }
+  .status-Done{ color: var(--green); }
+
+  .del-btn{
+    background:none; border:none; cursor:pointer;
+    color: var(--text-dim);
+    font-size: 16px;
+    padding: 2px;
+  }
+  .del-btn:hover{ color: var(--red); }
+
+  .empty-state{
+    padding: 30px 4px;
+    color: var(--text-dim);
+    font-size: 13.5px;
+    border-top: 1px solid var(--border);
+  }
+
+  .loading{
+    padding: 60px 20px;
+    text-align:center;
+    color: var(--text-muted);
+    font-size: 13.5px;
+  }
+
+  @media (max-width: 560px){
+    .ticket-row{
+      grid-template-columns: 1fr;
+      row-gap: 6px;
+    }
+    .ticket-id{ order: -1; }
+  }
+</style>
+</head>
+<body>
+<div id="app"><div class="loading">Connecting to the dispatch board…</div></div>
+
+<script>
+/* ---------- Firebase setup ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyBlp-SsWSfVik4Mnix-ifFDkaiswr2pCik",
+  authDomain: "dispatch-rotation-tracker.firebaseapp.com",
+  databaseURL: "https://dispatch-rotation-tracker-default-rtdb.firebaseio.com",
+  projectId: "dispatch-rotation-tracker",
+  storageBucket: "dispatch-rotation-tracker.firebasestorage.app",
+  messagingSenderId: "832135101384",
+  appId: "1:832135101384:web:8f9e8fca1a8d8822ec5efd"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const techsRef = db.ref('dispatch/techs');
+const ticketsRef = db.ref('dispatch/tickets');
+const metaRef = db.ref('dispatch/meta');
+const seededRef = db.ref('dispatch/seeded');
+
+const DEFAULT_TECH_NAMES = ['Andy', 'Brian', 'Andrew', 'Arpita', 'Chris'];
+
+function todayKey(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+/* Seed default data once, safely even if multiple people load it for the first time at once */
+seededRef.transaction(current => current ? undefined : true, (err, committed) => {
+  if(!err && committed){
+    const updates = {};
+    const keys = DEFAULT_TECH_NAMES.map(() => techsRef.push().key);
+    DEFAULT_TECH_NAMES.forEach((name, i) => {
+      updates['dispatch/techs/' + keys[i]] = { name, active: true, order: i };
+    });
+    updates['dispatch/meta'] = { nextTechId: keys[0], nextTicketNum: 1, lastResetDate: todayKey() };
+    db.ref().update(updates);
+  }
+});
+
+/* ---------- Local mirror of the shared data ---------- */
+let techs = {};
+let tickets = {};
+let meta = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
+let gotTechs = false, gotTickets = false, gotMeta = false;
+let isLive = false;
+
+techsRef.on('value', snap => {
+  techs = snap.val() || {};
+  gotTechs = true;
+  maybeRender();
+});
+ticketsRef.on('value', snap => {
+  tickets = snap.val() || {};
+  gotTickets = true;
+  maybeRender();
+});
+metaRef.on('value', snap => {
+  meta = snap.val() || meta;
+  gotMeta = true;
+  checkAutoReset();
+  maybeRender();
+});
+db.ref('.info/connected').on('value', snap => {
+  isLive = snap.val() === true;
+  if(gotTechs && gotTickets && gotMeta) render();
+});
+
+function maybeRender(){
+  if(gotTechs && gotTickets && gotMeta) render();
+}
+
+/* ---------- Helpers ---------- */
+function activeTechEntries(){
+  return Object.entries(techs)
+    .filter(([, t]) => t.active)
+    .sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+}
+function allTechEntriesSorted(){
+  return Object.entries(techs).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+}
+function ticketEntriesSorted(){
+  return Object.entries(tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
+}
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+function fmtTime(iso){
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month:'short', day:'numeric'}) + ' · ' +
+         d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit'});
+}
+function pad(n){ return '#' + String(n).padStart(4,'0'); }
+
+/* ---------- Mutations (write straight to Firebase; the listener re-renders everyone) ---------- */
+function addTech(name){
+  name = name.trim();
+  if(!name) return;
+  const key = techsRef.push().key;
+  const existingOrders = Object.values(techs).map(t => t.order || 0);
+  const order = existingOrders.length ? Math.max(...existingOrders) + 1 : 0;
+  const updates = {};
+  updates['dispatch/techs/' + key] = { name, active: true, order };
+  if(!meta.nextTechId){
+    updates['dispatch/meta/nextTechId'] = key;
+  }
+  db.ref().update(updates);
+}
+
+function removeTech(id){
+  const updates = {};
+  updates['dispatch/techs/' + id] = null;
+  if(meta.nextTechId === id){
+    const remaining = activeTechEntries().filter(([k]) => k !== id);
+    updates['dispatch/meta/nextTechId'] = remaining.length ? remaining[0][0] : null;
+  }
+  db.ref().update(updates);
+}
+
+function toggleTechActive(id){
+  const t = techs[id];
+  if(!t) return;
+  const newActive = !t.active;
+  const updates = {};
+  updates['dispatch/techs/' + id + '/active'] = newActive;
+  if(!newActive && meta.nextTechId === id){
+    const remaining = activeTechEntries().filter(([k]) => k !== id);
+    updates['dispatch/meta/nextTechId'] = remaining.length ? remaining[0][0] : null;
+  }
+  db.ref().update(updates);
+}
+
+function addTicket(title, priority){
+  title = title.trim();
+  if(!title) return;
+  const active = activeTechEntries();
+  if(active.length === 0) return;
+
+  let assignedId = null, assignedName = 'Unassigned', ticketNum = 1;
+
+  metaRef.transaction(current => {
+    if(!current) current = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
+    let idx = active.findIndex(([k]) => k === current.nextTechId);
+    if(idx === -1) idx = 0;
+    assignedId = active[idx][0];
+    assignedName = active[idx][1].name;
+    ticketNum = current.nextTicketNum || 1;
+    const nextIdx = (idx + 1) % active.length;
+    return {
+      nextTechId: active[nextIdx][0],
+      nextTicketNum: ticketNum + 1,
+      lastResetDate: current.lastResetDate || todayKey()
+    };
+  }, (error, committed) => {
+    if(error || !committed) return;
+    const ticketKey = ticketsRef.push().key;
+    ticketsRef.child(ticketKey).set({
+      num: ticketNum,
+      title,
+      priority,
+      status: 'Open',
+      assignedToId: assignedId,
+      assignedToName: assignedName,
+      createdAt: new Date().toISOString()
+    });
+  });
+}
+
+function reassignTicket(ticketId, techId){
+  const tech = techs[techId];
+  ticketsRef.child(ticketId).update({
+    assignedToId: techId || null,
+    assignedToName: tech ? tech.name : 'Unassigned'
+  });
+}
+
+function setTicketStatus(ticketId, status){
+  ticketsRef.child(ticketId).update({ status });
+}
+
+function deleteTicket(ticketId){
+  ticketsRef.child(ticketId).remove();
+}
+
+function resetTickets(){
+  const confirmed = confirm('Clear all tickets for everyone? The tech rotation and roster will stay as they are.');
+  if(!confirmed) return;
+  const updates = {};
+  updates['dispatch/tickets'] = null;
+  updates['dispatch/meta/nextTicketNum'] = 1;
+  updates['dispatch/meta/lastResetDate'] = todayKey();
+  db.ref().update(updates);
+}
+
+function checkAutoReset(){
+  const today = todayKey();
+  if(meta.lastResetDate && meta.lastResetDate !== today){
+    const updates = {};
+    updates['dispatch/tickets'] = null;
+    updates['dispatch/meta/nextTicketNum'] = 1;
+    updates['dispatch/meta/lastResetDate'] = today;
+    db.ref().update(updates);
+  }
+}
+
+/* ---------- Render ---------- */
+function render(){
+  const app = document.getElementById('app');
+
+  const ticketList = ticketEntriesSorted();
+  const openCount = ticketList.filter(([, t]) => t.status !== 'Done').length;
+  const techList = allTechEntriesSorted();
+
+  const rotationHtml = techList.length
+    ? techList.map(([id, t], i) => {
+        const isOnDeck = id === meta.nextTechId && t.active;
+        return `
+          <div class="tech-chip ${isOnDeck ? 'on-deck' : ''} ${!t.active ? 'skipped' : ''}">
+            <span class="num">${i+1}</span>
+            <span class="name">${escapeHtml(t.name)}</span>
+            <button class="toggle-skip" data-action="toggle-tech" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '⏸' : '▶'}</button>
+            <button data-action="remove-tech" data-id="${id}" title="Remove">✕</button>
+          </div>`;
+      }).join('')
+    : '<div style="color:var(--text-dim); font-size:13.5px;">No techs yet — add your team below.</div>';
+
+  const ticketsHtml = ticketList.length
+    ? ticketList.map(([id, ticket]) => `
+        <div class="ticket-row">
+          <div class="ticket-id mono">${pad(ticket.num)}</div>
+          <div class="ticket-title">
+            <div class="t">${escapeHtml(ticket.title)}</div>
+            <div class="meta">${fmtTime(ticket.createdAt)}</div>
+          </div>
+          <div class="priority-tag priority-${ticket.priority}">${ticket.priority}</div>
+          <select data-action="reassign" data-id="${id}" title="Reassign">
+            <option value="">Unassigned</option>
+            ${techList.map(([tid, t]) => `<option value="${tid}" ${tid === ticket.assignedToId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+          <select class="status-select status-${ticket.status.replace(' ','\\ ')}" data-action="status" data-id="${id}">
+            ${['Open','In Progress','Done'].map(s => `<option value="${s}" ${s===ticket.status?'selected':''}>${s}</option>`).join('')}
+          </select>
+          <button class="del-btn" data-action="delete-ticket" data-id="${id}" title="Delete">✕</button>
+        </div>
+      `).join('')
+    : '<div class="empty-state">No tickets dispatched yet. Add one below — it\'ll go to whoever is on deck.</div>';
+
+  app.innerHTML = `
+    <header class="top">
+      <div>
+        <h1>Dispatch</h1>
+        <p>Tickets route to whoever is on deck, in order. Shared live with everyone on this link.</p>
+      </div>
+      <div class="count-badge">
+        <b>${openCount}</b>open
+        <div class="sync-status ${isLive ? 'live' : 'offline'}"><span class="sync-dot"></span>${isLive ? 'synced' : 'reconnecting…'}</div>
+      </div>
+    </header>
+
+    <section>
+      <h2>ROTATION</h2>
+      <div class="rotation-strip">${rotationHtml}</div>
+      <div class="add-tech-row">
+        <input type="text" id="new-tech-input" placeholder="Add a tech, e.g. Priya" />
+        <button class="primary" data-action="add-tech">Add</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>NEW TICKET</h2>
+      <div class="ticket-form">
+        <input type="text" id="new-ticket-title" placeholder="What needs doing?" />
+        <select id="new-ticket-priority">
+          <option>Normal</option>
+          <option>Low</option>
+          <option>High</option>
+          <option>Urgent</option>
+        </select>
+        <button class="primary" data-action="add-ticket" ${activeTechEntries().length === 0 ? 'disabled' : ''}>Dispatch</button>
+      </div>
+      ${activeTechEntries().length === 0 ? '<div style="color:var(--text-dim); font-size:12.5px; margin-top:8px;">Add at least one available tech to dispatch a ticket.</div>' : ''}
+    </section>
+
+    <section>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+        <h2 style="margin:0;">TICKETS</h2>
+        <button class="ghost" data-action="reset-tickets">Reset now</button>
+      </div>
+      <div style="color:var(--text-dim); font-size:12px; margin-bottom:12px;">Resets for everyone automatically at midnight.</div>
+      ${ticketsHtml}
+    </section>
+  `;
+
+  wireEvents();
+}
+
+function wireEvents(){
+  const app = document.getElementById('app');
+
+  const addTechBtn = app.querySelector('[data-action="add-tech"]');
+  if(addTechBtn){
+    addTechBtn.onclick = () => {
+      const input = document.getElementById('new-tech-input');
+      addTech(input.value);
+      input.value = '';
+    };
+  }
+  const techInput = document.getElementById('new-tech-input');
+  if(techInput){
+    techInput.onkeydown = (e) => { if(e.key === 'Enter'){ addTech(techInput.value); techInput.value=''; } };
+  }
+
+  const addTicketBtn = app.querySelector('[data-action="add-ticket"]');
+  if(addTicketBtn){
+    addTicketBtn.onclick = () => {
+      const titleInput = document.getElementById('new-ticket-title');
+      const prioritySelect = document.getElementById('new-ticket-priority');
+      addTicket(titleInput.value, prioritySelect.value);
+      titleInput.value = '';
+      prioritySelect.value = 'Normal';
+    };
+  }
+  const ticketTitleInput = document.getElementById('new-ticket-title');
+  if(ticketTitleInput){
+    ticketTitleInput.onkeydown = (e) => {
+      if(e.key === 'Enter'){
+        const prioritySelect = document.getElementById('new-ticket-priority');
+        addTicket(ticketTitleInput.value, prioritySelect.value);
+        ticketTitleInput.value = '';
+        prioritySelect.value = 'Normal';
+      }
+    };
+  }
+
+  app.querySelectorAll('[data-action="toggle-tech"]').forEach(btn => {
+    btn.onclick = () => toggleTechActive(btn.dataset.id);
+  });
+  app.querySelectorAll('[data-action="remove-tech"]').forEach(btn => {
+    btn.onclick = () => removeTech(btn.dataset.id);
+  });
+  app.querySelectorAll('[data-action="reassign"]').forEach(sel => {
+    sel.onchange = () => reassignTicket(sel.dataset.id, sel.value);
+  });
+  app.querySelectorAll('[data-action="status"]').forEach(sel => {
+    sel.onchange = () => setTicketStatus(sel.dataset.id, sel.value);
+  });
+  app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
+    btn.onclick = () => deleteTicket(btn.dataset.id);
+  });
+  const resetBtn = app.querySelector('[data-action="reset-tickets"]');
+  if(resetBtn){
+    resetBtn.onclick = resetTickets;
+  }
+}
+
+/* Safety-net full refresh every 2 minutes, in case a connection silently drops.
+   Live changes already appear instantly via the Firebase listeners above. */
+setInterval(() => location.reload(), 2 * 60 * 1000);
+</script>
+</body>
+</html>
