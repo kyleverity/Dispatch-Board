@@ -195,7 +195,7 @@
   /* Ticket list */
   .ticket-row{
     display:grid;
-    grid-template-columns: 62px 1fr auto auto auto 28px;
+    grid-template-columns: 62px 1fr auto auto 28px;
     align-items:center;
     gap: 12px;
     padding: 13px 4px;
@@ -243,10 +243,6 @@
     padding: 6px 8px;
     font-size: 12.5px;
   }
-  .status-Open{ color: var(--text-muted); }
-  .status-In\ Progress{ color: var(--blue); }
-  .status-Done{ color: var(--green); }
-
   .del-btn{
     background:none; border:none; cursor:pointer;
     color: var(--text-dim);
@@ -535,10 +531,6 @@ function reassignTicket(ticketId, techId){
   });
 }
 
-function setTicketStatus(ticketId, status){
-  ticketsRef.child(ticketId).update({ status });
-}
-
 function deleteTicket(ticketId){
   ticketsRef.child(ticketId).remove();
 }
@@ -569,7 +561,7 @@ function render(){
   const app = document.getElementById('app');
 
   const ticketList = ticketEntriesSorted();
-  const openCount = ticketList.filter(([, t]) => t.status !== 'Done').length;
+  const ticketCount = ticketList.length;
   const techList = allTechEntriesSorted();
 
   const rotationHtml = techList.length
@@ -597,9 +589,6 @@ function render(){
             <option value="">Unassigned</option>
             ${techList.map(([tid, t]) => `<option value="${tid}" ${tid === ticket.assignedToId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
           </select>
-          <select class="status-select status-${ticket.status.replace(' ','\\ ')}" data-action="status" data-id="${id}">
-            ${['Open','In Progress','Done'].map(s => `<option value="${s}" ${s===ticket.status?'selected':''}>${s}</option>`).join('')}
-          </select>
           <button class="del-btn" data-action="delete-ticket" data-id="${id}" title="Delete">✕</button>
         </div>
       `).join('')
@@ -615,7 +604,7 @@ function render(){
         <p>Tickets route to whoever is on deck, in order. Shared live with everyone on this link.</p>
       </div>
       <div class="count-badge">
-        <b>${openCount}</b>open
+        <b>${ticketCount}</b>tickets
         <div class="sync-status ${isLive ? 'live' : 'offline'}"><span class="sync-dot"></span>${isLive ? 'synced' : 'reconnecting…'}</div>
       </div>
     </header>
@@ -700,9 +689,6 @@ function wireEvents(){
   });
   app.querySelectorAll('[data-action="reassign"]').forEach(sel => {
     sel.onchange = () => reassignTicket(sel.dataset.id, sel.value);
-  });
-  app.querySelectorAll('[data-action="status"]').forEach(sel => {
-    sel.onchange = () => setTicketStatus(sel.dataset.id, sel.value);
   });
   app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
     btn.onclick = () => deleteTicket(btn.dataset.id);
