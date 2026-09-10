@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Dispatch</title>
+<title>Dispatch Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -357,7 +357,7 @@ function renderLoading(){
 function renderLogin(errorMsg){
   document.getElementById('app').innerHTML = `
     <div class="login-wrap">
-      <h1>Dispatch</h1>
+      <h1>Dispatch Tracker</h1>
       <p>Sign in with the team login to view and update the board.</p>
       <div class="login-form">
         <input type="email" id="login-email" placeholder="Email" autocomplete="username" />
@@ -608,7 +608,10 @@ function render(){
   app.innerHTML = `
     <header class="top">
       <div>
-        <h1>Dispatch</h1>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+          <img src="https://verityit.com/wp-content/uploads/2020/04/VerITy_Favicon.png" alt="Verity IT" style="width:26px; height:26px; object-fit:contain; border-radius:5px;" />
+          <h1 style="margin:0;">Dispatch Tracker</h1>
+        </div>
         <p>Tickets route to whoever is on deck, in order. Shared live with everyone on this link.</p>
       </div>
       <div class="count-badge">
@@ -704,17 +707,4 @@ function wireEvents(){
   app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
     btn.onclick = () => deleteTicket(btn.dataset.id);
   });
-  const resetBtn = app.querySelector('[data-action="reset-tickets"]');
-  if(resetBtn){
-    resetBtn.onclick = resetTickets;
-  }
-}
-
-/* Safety-net full refresh every 2 minutes, in case a connection silently drops.
-   Live changes already appear instantly via the Firebase listeners above. */
-setInterval(() => location.reload(), 2 * 60 * 1000);
-
-} /* end startApp */
-</script>
-</body>
-</html>
+  const resetBtn = app.querySelector('[data-action="reset-tickets"]'
