@@ -707,4 +707,17 @@ function wireEvents(){
   app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
     btn.onclick = () => deleteTicket(btn.dataset.id);
   });
-  const resetBtn = app.querySelector('[data-action="reset-tickets"]'
+  const resetBtn = app.querySelector('[data-action="reset-tickets"]');
+  if(resetBtn){
+    resetBtn.onclick = resetTickets;
+  }
+}
+
+/* Safety-net full refresh every 2 minutes, in case a connection silently drops.
+   Live changes already appear instantly via the Firebase listeners above. */
+setInterval(() => location.reload(), 2 * 60 * 1000);
+
+} /* end startApp */
+</script>
+</body>
+</html>
