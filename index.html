@@ -541,13 +541,19 @@ function deleteTicket(ticketId){
   ticketsRef.child(ticketId).remove();
 }
 
+function firstTechId(){
+  const sorted = allTechEntriesSorted();
+  return sorted.length ? sorted[0][0] : null;
+}
+
 function resetTickets(){
-  const confirmed = confirm('Clear all tickets for everyone? The tech rotation and roster will stay as they are.');
+  const confirmed = confirm('Clear all tickets for everyone and reset the rotation back to the top? Tech roster stays as-is.');
   if(!confirmed) return;
   const updates = {};
   updates['dispatch/tickets'] = null;
   updates['dispatch/meta/nextTicketNum'] = 1;
   updates['dispatch/meta/lastResetDate'] = todayKey();
+  updates['dispatch/meta/nextTechId'] = firstTechId();
   db.ref().update(updates);
 }
 
@@ -558,6 +564,7 @@ function checkAutoReset(){
     updates['dispatch/tickets'] = null;
     updates['dispatch/meta/nextTicketNum'] = 1;
     updates['dispatch/meta/lastResetDate'] = today;
+    updates['dispatch/meta/nextTechId'] = firstTechId();
     db.ref().update(updates);
   }
 }
@@ -645,7 +652,7 @@ function render(){
         <h2 style="margin:0;">TICKETS</h2>
         <button class="ghost" data-action="reset-tickets">Reset now</button>
       </div>
-      <div style="color:var(--text-dim); font-size:12px; margin-bottom:12px;">Resets for everyone automatically at midnight.</div>
+      <div style="color:var(--text-dim); font-size:12px; margin-bottom:12px;">Resets for everyone automatically at midnight, rotation back to the top.</div>
       ${ticketsHtml}
     </section>
   `;
