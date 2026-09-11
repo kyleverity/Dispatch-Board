@@ -147,11 +147,6 @@
     font-family: 'IBM Plex Mono', monospace;
   }
 
-  .add-tech-row{
-    display:flex;
-    gap: 8px;
-    margin-top: 12px;
-  }
   input, select{
     background: var(--panel-2);
     border: 1px solid var(--border);
@@ -456,19 +451,6 @@ function fmtTime(iso){
 function pad(n){ return '#' + String(n).padStart(4,'0'); }
 
 /* ---------- Mutations (write straight to Firebase; the listener re-renders everyone) ---------- */
-function addTech(name){
-  name = name.trim();
-  if(!name) return;
-  const key = techsRef.push().key;
-  const existingOrders = Object.values(techs).map(t => t.order || 0);
-  const order = existingOrders.length ? Math.max(...existingOrders) + 1 : 0;
-  const updates = {};
-  updates['dispatch/techs/' + key] = { name, active: true, order };
-  if(!meta.nextTechId){
-    updates['dispatch/meta/nextTechId'] = key;
-  }
-  db.ref().update(updates);
-}
 
 function removeTech(id){
   const updates = {};
@@ -626,10 +608,6 @@ function render(){
     <section>
       <h2>ROTATION</h2>
       <div class="rotation-strip">${rotationHtml}</div>
-      <div class="add-tech-row">
-        <input type="text" id="new-tech-input" placeholder="Add a tech, e.g. Priya" />
-        <button class="primary" data-action="add-tech">Add</button>
-      </div>
     </section>
 
     <section>
@@ -662,19 +640,6 @@ function render(){
 
 function wireEvents(){
   const app = document.getElementById('app');
-
-  const addTechBtn = app.querySelector('[data-action="add-tech"]');
-  if(addTechBtn){
-    addTechBtn.onclick = () => {
-      const input = document.getElementById('new-tech-input');
-      addTech(input.value);
-      input.value = '';
-    };
-  }
-  const techInput = document.getElementById('new-tech-input');
-  if(techInput){
-    techInput.onkeydown = (e) => { if(e.key === 'Enter'){ addTech(techInput.value); techInput.value=''; } };
-  }
 
   const addTicketBtn = app.querySelector('[data-action="add-ticket"]');
   if(addTicketBtn){
