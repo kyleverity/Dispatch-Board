@@ -547,8 +547,8 @@ function firstTechId(){
 }
 
 function resetTickets(){
-  const confirmed = confirm('Clear all tickets for everyone and reset the rotation back to the top? Tech roster stays as-is.');
-  if(!confirmed) return;
+  const typed = prompt('This clears all tickets for everyone and resets the rotation back to the top.\n\nType RESET to confirm:');
+  if(!typed || typed.trim().toUpperCase() !== 'RESET') return;
   const updates = {};
   updates['dispatch/tickets'] = null;
   updates['dispatch/meta/nextTicketNum'] = 1;
