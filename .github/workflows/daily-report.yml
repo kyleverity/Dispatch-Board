@@ -1,0 +1,33 @@
+name: Nightly Dispatch Report
+
+on:
+  schedule:
+    # Both entries exist to cover Eastern Daylight Time and Eastern Standard Time.
+    # The script itself checks the real Eastern clock and only sends on the run
+    # that's actually landing near 11:55 PM, so this self-corrects across DST changes.
+    - cron: '55 3 * * *'  # 11:55 PM EDT (UTC-4)
+    - cron: '55 4 * * *'  # 11:55 PM EST (UTC-5)
+  workflow_dispatch: {}   # lets you run it manually from the Actions tab to test
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Send report
+        working-directory: scripts
+        env:
+          DISPATCH_EMAIL: ${{ secrets.DISPATCH_EMAIL }}
+          DISPATCH_PASSWORD: ${{ secrets.DISPATCH_PASSWORD }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: node send-report.js
