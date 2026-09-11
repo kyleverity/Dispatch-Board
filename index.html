@@ -475,9 +475,35 @@ function toggleTechActive(id){
   db.ref().update(updates);
 }
 
-function addTicket(title, priority){
+function addTicket(title, priority, assigneeId){
   title = title.trim();
   if(!title) return;
+
+  if(assigneeId){
+    // Manually assigned — doesn't touch the rotation pointer at all.
+    const tech = techs[assigneeId];
+    if(!tech) return;
+    let ticketNum = 1;
+    metaRef.transaction(current => {
+      if(!current) current = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
+      ticketNum = current.nextTicketNum || 1;
+      return Object.assign({}, current, { nextTicketNum: ticketNum + 1 });
+    }, (error, committed) => {
+      if(error || !committed) return;
+      const ticketKey = ticketsRef.push().key;
+      ticketsRef.child(ticketKey).set({
+        num: ticketNum,
+        title,
+        priority,
+        assignedToId: assigneeId,
+        assignedToName: tech.name,
+        createdAt: new Date().toISOString()
+      });
+    });
+    return;
+  }
+
+  // Next in rotation — assigns to whoever's on deck and advances the pointer.
   const active = activeTechEntries();
   if(active.length === 0) return;
 
@@ -503,7 +529,6 @@ function addTicket(title, priority){
       num: ticketNum,
       title,
       priority,
-      status: 'Open',
       assignedToId: assignedId,
       assignedToName: assignedName,
       createdAt: new Date().toISOString()
@@ -620,6 +645,10 @@ function render(){
           <option>High</option>
           <option>Urgent</option>
         </select>
+        <select id="new-ticket-assignee" title="Who gets this ticket">
+          <option value="">Next in rotation</option>
+          ${activeTechEntries().map(([id, t]) => `<option value="${id}">${escapeHtml(t.name)}</option>`).join('')}
+        </select>
         <button class="primary" data-action="add-ticket" ${activeTechEntries().length === 0 ? 'disabled' : ''}>Dispatch</button>
       </div>
       ${activeTechEntries().length === 0 ? '<div style="color:var(--text-dim); font-size:12.5px; margin-top:8px;">Add at least one available tech to dispatch a ticket.</div>' : ''}
@@ -646,9 +675,11 @@ function wireEvents(){
     addTicketBtn.onclick = () => {
       const titleInput = document.getElementById('new-ticket-title');
       const prioritySelect = document.getElementById('new-ticket-priority');
-      addTicket(titleInput.value, prioritySelect.value);
+      const assigneeSelect = document.getElementById('new-ticket-assignee');
+      addTicket(titleInput.value, prioritySelect.value, assigneeSelect.value);
       titleInput.value = '';
       prioritySelect.value = 'Normal';
+      assigneeSelect.value = '';
     };
   }
   const ticketTitleInput = document.getElementById('new-ticket-title');
@@ -656,9 +687,11 @@ function wireEvents(){
     ticketTitleInput.onkeydown = (e) => {
       if(e.key === 'Enter'){
         const prioritySelect = document.getElementById('new-ticket-priority');
-        addTicket(ticketTitleInput.value, prioritySelect.value);
+        const assigneeSelect = document.getElementById('new-ticket-assignee');
+        addTicket(ticketTitleInput.value, prioritySelect.value, assigneeSelect.value);
         ticketTitleInput.value = '';
         prioritySelect.value = 'Normal';
+        assigneeSelect.value = '';
       }
     };
   }
