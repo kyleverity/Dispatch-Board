@@ -7,7 +7,12 @@ on:
     # that's actually landing near 11:55 PM, so this self-corrects across DST changes.
     - cron: '55 3 * * *'  # 11:55 PM EDT (UTC-4)
     - cron: '55 4 * * *'  # 11:55 PM EST (UTC-5)
-  workflow_dispatch: {}   # lets you run it manually from the Actions tab to test
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Send right now regardless of time (for testing)'
+        type: boolean
+        default: false
 
 jobs:
   send-report:
@@ -30,4 +35,5 @@ jobs:
           DISPATCH_PASSWORD: ${{ secrets.DISPATCH_PASSWORD }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          FORCE_SEND: ${{ github.event.inputs.force }}
         run: node send-report.js
