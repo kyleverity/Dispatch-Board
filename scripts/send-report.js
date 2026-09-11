@@ -27,7 +27,9 @@ async function main(){
   // an hour off after Daylight Saving changes. Only the run that's actually landing
   // near 11:55 PM Eastern right now should go ahead and send.
   const { hour, minute } = nowInEastern();
-  if(!(hour === 23 && minute >= 50)){
+  if(process.env.FORCE_SEND === 'true'){
+    console.log('Force-send enabled — skipping the time-window check.');
+  } else if(!(hour === 23 && minute >= 50)){
     console.log(`Skipping this run — it's ${hour}:${String(minute).padStart(2,'0')} Eastern, not the target window.`);
     return;
   }
