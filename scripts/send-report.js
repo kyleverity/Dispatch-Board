@@ -22,14 +22,25 @@ function nowInEastern(){
   return { hour: parseInt(map.hour, 10), minute: parseInt(map.minute, 10) };
 }
 
+function todayKeyEastern(){
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date());
+  const map = {};
+  parts.forEach(p => { map[p.type] = p.value; });
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
 async function main(){
   // This workflow is scheduled twice (to cover both EST and EDT) so it never drifts
   // an hour off after Daylight Saving changes. Only the run that's actually landing
   // near 11:55 PM Eastern right now should go ahead and send.
   const { hour, minute } = nowInEastern();
+  const withinWindow = hour === 23 && minute >= 50;
   if(process.env.FORCE_SEND === 'true'){
     console.log('Force-send enabled — skipping the time-window check.');
-  } else if(!(hour === 23 && minute >= 50)){
+  } else if(!withinWindow){
     console.log(`Skipping this run — it's ${hour}:${String(minute).padStart(2,'0')} Eastern, not the target window.`);
     return;
   }
@@ -116,6 +127,33 @@ async function main(){
   });
 
   console.log('Report sent to ' + REPORT_RECIPIENT);
+
+  if(!withinWindow){
+    console.log('Force-tested outside the real window — leaving the board untouched (no reset).');
+    return;
+  }
+
+  const techsRes = await fetch(`${DATABASE_URL}/dispatch/techs.json?auth=${idToken}`);
+  const techsObj = (await techsRes.json()) || {};
+  const sortedTechs = Object.entries(techsObj).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+  const firstTechId = sortedTechs.length ? sortedTechs[0][0] : null;
+
+  const resetRes = await fetch(`${DATABASE_URL}/dispatch.json?auth=${idToken}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tickets: null,
+      meta: {
+        nextTechId: firstTechId,
+        nextTicketNum: 1,
+        lastResetDate: todayKeyEastern()
+      }
+    })
+  });
+  if(!resetRes.ok){
+    throw new Error('Reset failed: ' + (await resetRes.text()));
+  }
+  console.log('Board reset for the new day — rotation back to the top.');
 }
 
 main().catch(err => {
