@@ -2,10 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Dispatch Tracker (Preview)</title>
+<title>Dispatch Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-database-compat.min.js"></script>
 <style>
   :root{
     --bg: #12151B;
@@ -354,43 +357,152 @@
 </style>
 </head>
 <body>
-<div id="app"></div>
-<div style="max-width:780px;margin:0 auto;padding:0 20px 30px;color:var(--text-dim);font-size:11px;font-family:'IBM Plex Mono',monospace;">PREVIEW MODE — sample data only, nothing here is saved or connected to your real board.</div>
+<div id="app"><div class="loading">Connecting to the dispatch board…</div></div>
 
 <script>
-/* ---------- Local-only sample data (no Firebase, no login) ---------- */
-const boards = {
-  helpdesk: {
-    key: 'helpdesk', label: 'Help Desk',
-    techs: {
-      t1: { name: 'Andy', active: true, order: 0 },
-      t2: { name: 'Brian', active: true, order: 1 },
-      t3: { name: 'Andrew', active: false, order: 2 },
-      t4: { name: 'Arpita', active: true, order: 3 },
-      t5: { name: 'Chris', active: true, order: 4 }
-    },
-    tickets: {
-      k1: { num: 1, title: 'Printer jam on 3rd floor', priority: 'Normal', assignedToId: 't1', assignedToName: 'Andy', createdAt: new Date(Date.now() - 3600e3).toISOString() },
-      k2: { num: 2, title: 'VPN not connecting for remote user', priority: 'High', assignedToId: 't2', assignedToName: 'Brian', createdAt: new Date(Date.now() - 1800e3).toISOString() }
-    },
-    meta: { nextTechId: 't4', nextTicketNum: 3 }
-  },
-  intake: {
-    key: 'intake', label: 'Intake',
-    techs: {
-      i1: { name: 'Ian', active: true, order: 0 },
-      i2: { name: 'Kevin', active: true, order: 1 },
-      i3: { name: 'Sean', active: true, order: 2 },
-      i4: { name: 'Chalcie', active: true, order: 3 }
-    },
-    tickets: {
-      j1: { num: 1, title: 'New client intake — Meridian Corp', priority: 'Phone', assignedToId: 'i1', assignedToName: 'Ian', createdAt: new Date(Date.now() - 2400e3).toISOString() }
-    },
-    meta: { nextTechId: 'i2', nextTicketNum: 2 }
-  }
+/* ---------- Firebase setup ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyBlp-SsWSfVik4Mnix-ifFDkaiswr2pCik",
+  authDomain: "dispatch-rotation-tracker.firebaseapp.com",
+  databaseURL: "https://dispatch-rotation-tracker-default-rtdb.firebaseio.com",
+  projectId: "dispatch-rotation-tracker",
+  storageBucket: "dispatch-rotation-tracker.firebasestorage.app",
+  messagingSenderId: "832135101384",
+  appId: "1:832135101384:web:8f9e8fca1a8d8822ec5efd"
 };
-let isLive = true; // shown as "synced" just for visual parity — not real in preview
-let nextLocalKey = 100;
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.database();
+let appStarted = false;
+let isLive = false;
+
+/* ---------- Board definitions ----------
+   Help Desk keeps its original (unprefixed) paths for backward compatibility
+   with data that already exists. Intake uses its own paths alongside it,
+   nested under the same "dispatch" node so the existing security rules
+   (which already scope to /dispatch) automatically cover it too. */
+const BOARD_DEFS = [
+  { key: 'helpdesk', label: 'Help Desk', techsPath: 'dispatch/techs', ticketsPath: 'dispatch/tickets', metaPath: 'dispatch/meta', seededPath: 'dispatch/seeded', defaultNames: ['Andy', 'Brian', 'Andrew', 'Arpita', 'Chris'] },
+  { key: 'intake', label: 'Intake', techsPath: 'dispatch/intakeTechs', ticketsPath: 'dispatch/intakeTickets', metaPath: 'dispatch/intakeMeta', seededPath: 'dispatch/intakeSeeded', defaultNames: ['Ian', 'Kevin', 'Sean', 'Chalcie'] }
+];
+
+const boards = {};
+BOARD_DEFS.forEach(def => {
+  boards[def.key] = Object.assign({}, def, {
+    techs: {}, tickets: {},
+    meta: { nextTechId: null, nextTicketNum: 1, lastResetDate: '' },
+    gotTechs: false, gotTickets: false, gotMeta: false
+  });
+});
+
+function todayKey(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+/* ---------- Auth gate ---------- */
+auth.onAuthStateChanged(user => {
+  if(user){
+    renderLoading();
+    if(!appStarted){
+      appStarted = true;
+      startApp();
+    }
+  } else {
+    renderLogin();
+  }
+});
+
+function renderLoading(){
+  document.getElementById('app').innerHTML = '<div class="loading">Connecting to the dispatch board…</div>';
+}
+
+function renderLogin(errorMsg){
+  document.getElementById('app').innerHTML = `
+    <div class="login-wrap">
+      <h1>Dispatch Tracker</h1>
+      <p>Sign in with the team login to view and update the board.</p>
+      <div class="login-form">
+        <input type="email" id="login-email" placeholder="Email" autocomplete="username" />
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+        <button class="primary" id="login-btn">Sign in</button>
+        <div class="login-error">${errorMsg ? escapeHtml(errorMsg) : ''}</div>
+      </div>
+    </div>
+  `;
+  const doLogin = () => {
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+    if(!email || !password) return;
+    auth.signInWithEmailAndPassword(email, password).catch(err => {
+      renderLogin('Wrong email or password — try again.');
+    });
+  };
+  document.getElementById('login-btn').onclick = doLogin;
+  document.getElementById('login-password').onkeydown = (e) => { if(e.key === 'Enter') doLogin(); };
+}
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+/* ---------- Everything below only runs once someone is signed in ---------- */
+function startApp(){
+
+  BOARD_DEFS.forEach(def => seedBoard(boards[def.key]));
+  BOARD_DEFS.forEach(def => attachListeners(boards[def.key]));
+
+  db.ref('.info/connected').on('value', snap => {
+    isLive = snap.val() === true;
+    maybeRender();
+  });
+
+  /* Safety-net full refresh every 2 minutes, in case a connection silently drops.
+     Live changes already appear instantly via the Firebase listeners below. */
+  setInterval(() => location.reload(), 2 * 60 * 1000);
+}
+
+function seedBoard(board){
+  const seededRef = db.ref(board.seededPath);
+  seededRef.transaction(current => current ? undefined : true, (err, committed) => {
+    if(!err && committed){
+      const techsRef = db.ref(board.techsPath);
+      const updates = {};
+      const keys = board.defaultNames.map(() => techsRef.push().key);
+      board.defaultNames.forEach((name, i) => {
+        updates[board.techsPath + '/' + keys[i]] = { name, active: true, order: i };
+      });
+      updates[board.metaPath] = { nextTechId: keys[0], nextTicketNum: 1, lastResetDate: todayKey() };
+      db.ref().update(updates);
+    }
+  });
+}
+
+function attachListeners(board){
+  db.ref(board.techsPath).on('value', snap => {
+    board.techs = snap.val() || {};
+    board.gotTechs = true;
+    maybeRender();
+  });
+  db.ref(board.ticketsPath).on('value', snap => {
+    board.tickets = snap.val() || {};
+    board.gotTickets = true;
+    maybeRender();
+  });
+  db.ref(board.metaPath).on('value', snap => {
+    board.meta = snap.val() || board.meta;
+    board.gotMeta = true;
+    checkAutoReset(board);
+    maybeRender();
+  });
+}
+
+function maybeRender(){
+  const allReady = Object.values(boards).every(b => b.gotTechs && b.gotTickets && b.gotMeta);
+  if(allReady) render();
+}
 
 /* ---------- Helpers ---------- */
 function activeTechEntries(board){
@@ -404,14 +516,9 @@ function allTechEntriesSorted(board){
 function ticketEntriesSorted(board){
   return Object.entries(board.tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
 }
-function escapeHtml(s){
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
 function fmtTime(iso){
   const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month:'short', day:'numeric'}) + ' \u00b7 ' +
+  return d.toLocaleDateString(undefined, { month:'short', day:'numeric'}) + ' · ' +
          d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit'});
 }
 function pad(n){ return '#' + String(n).padStart(4,'0'); }
@@ -420,78 +527,114 @@ function firstTechId(board){
   return sorted.length ? sorted[0][0] : null;
 }
 
-/* ---------- Mutations (local only — nothing persists, just re-renders) ---------- */
+/* ---------- Mutations (write straight to Firebase; the listener re-renders everyone) ---------- */
 function toggleTechActive(board, id){
   const t = board.techs[id];
   if(!t) return;
-  t.active = !t.active;
-  if(!t.active && board.meta.nextTechId === id){
+  const newActive = !t.active;
+  const updates = {};
+  updates[board.techsPath + '/' + id + '/active'] = newActive;
+  if(!newActive && board.meta.nextTechId === id){
     const remaining = activeTechEntries(board).filter(([k]) => k !== id);
-    board.meta.nextTechId = remaining.length ? remaining[0][0] : null;
+    updates[board.metaPath + '/nextTechId'] = remaining.length ? remaining[0][0] : null;
   }
-  render();
+  db.ref().update(updates);
 }
 
 function addTicket(board, title, priority, assigneeId){
   title = title.trim();
   if(!title) return;
+  const ticketsRef = db.ref(board.ticketsPath);
+  const metaRef = db.ref(board.metaPath);
 
   if(assigneeId){
     const tech = board.techs[assigneeId];
     if(!tech) return;
-    const key = 'k' + (nextLocalKey++);
-    board.tickets[key] = {
-      num: board.meta.nextTicketNum++,
-      title, priority,
-      assignedToId: assigneeId,
-      assignedToName: tech.name,
-      createdAt: new Date().toISOString()
-    };
-    render();
+    let ticketNum = 1;
+    metaRef.transaction(current => {
+      if(!current) current = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
+      ticketNum = current.nextTicketNum || 1;
+      return Object.assign({}, current, { nextTicketNum: ticketNum + 1 });
+    }, (error, committed) => {
+      if(error || !committed) return;
+      const ticketKey = ticketsRef.push().key;
+      ticketsRef.child(ticketKey).set({
+        num: ticketNum,
+        title,
+        priority,
+        assignedToId: assigneeId,
+        assignedToName: tech.name,
+        createdAt: new Date().toISOString()
+      });
+    });
     return;
   }
 
   const active = activeTechEntries(board);
   if(active.length === 0) return;
-  let idx = active.findIndex(([k]) => k === board.meta.nextTechId);
-  if(idx === -1) idx = 0;
-  const assignedId = active[idx][0];
-  const assignedName = active[idx][1].name;
-  const nextIdx = (idx + 1) % active.length;
-  board.meta.nextTechId = active[nextIdx][0];
 
-  const key = 'k' + (nextLocalKey++);
-  board.tickets[key] = {
-    num: board.meta.nextTicketNum++,
-    title, priority,
-    assignedToId: assignedId,
-    assignedToName: assignedName,
-    createdAt: new Date().toISOString()
-  };
-  render();
+  let assignedId = null, assignedName = 'Unassigned', ticketNum = 1;
+
+  metaRef.transaction(current => {
+    if(!current) current = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
+    let idx = active.findIndex(([k]) => k === current.nextTechId);
+    if(idx === -1) idx = 0;
+    assignedId = active[idx][0];
+    assignedName = active[idx][1].name;
+    ticketNum = current.nextTicketNum || 1;
+    const nextIdx = (idx + 1) % active.length;
+    return {
+      nextTechId: active[nextIdx][0],
+      nextTicketNum: ticketNum + 1,
+      lastResetDate: current.lastResetDate || todayKey()
+    };
+  }, (error, committed) => {
+    if(error || !committed) return;
+    const ticketKey = ticketsRef.push().key;
+    ticketsRef.child(ticketKey).set({
+      num: ticketNum,
+      title,
+      priority,
+      assignedToId: assignedId,
+      assignedToName: assignedName,
+      createdAt: new Date().toISOString()
+    });
+  });
 }
 
 function reassignTicket(board, ticketId, techId){
   const tech = board.techs[techId];
-  const ticket = board.tickets[ticketId];
-  if(!ticket) return;
-  ticket.assignedToId = techId || null;
-  ticket.assignedToName = tech ? tech.name : 'Unassigned';
-  render();
+  db.ref(board.ticketsPath).child(ticketId).update({
+    assignedToId: techId || null,
+    assignedToName: tech ? tech.name : 'Unassigned'
+  });
 }
 
 function deleteTicket(board, ticketId){
-  delete board.tickets[ticketId];
-  render();
+  db.ref(board.ticketsPath).child(ticketId).remove();
 }
 
 function resetTickets(board){
-  const typed = prompt(`This clears all ${board.label} tickets and resets that rotation back to the top.\n\nType RESET to confirm:`);
+  const typed = prompt(`This clears all ${board.label} tickets for everyone and resets that rotation back to the top.\n\nType RESET to confirm:`);
   if(!typed || typed.trim().toUpperCase() !== 'RESET') return;
-  board.tickets = {};
-  board.meta.nextTicketNum = 1;
-  board.meta.nextTechId = firstTechId(board);
-  render();
+  const updates = {};
+  updates[board.ticketsPath] = null;
+  updates[board.metaPath + '/nextTicketNum'] = 1;
+  updates[board.metaPath + '/lastResetDate'] = todayKey();
+  updates[board.metaPath + '/nextTechId'] = firstTechId(board);
+  db.ref().update(updates);
+}
+
+function checkAutoReset(board){
+  const today = todayKey();
+  if(board.meta.lastResetDate && board.meta.lastResetDate !== today){
+    const updates = {};
+    updates[board.ticketsPath] = null;
+    updates[board.metaPath + '/nextTicketNum'] = 1;
+    updates[board.metaPath + '/lastResetDate'] = today;
+    updates[board.metaPath + '/nextTechId'] = firstTechId(board);
+    db.ref().update(updates);
+  }
 }
 
 /* ---------- Render ---------- */
@@ -507,7 +650,7 @@ function renderBoardSection(board){
           <div class="tech-chip ${isOnDeck ? 'on-deck' : ''} ${!t.active ? 'skipped' : ''}">
             <span class="num">${i+1}</span>
             <span class="name">${escapeHtml(t.name)}</span>
-            <button class="toggle-skip" data-action="toggle-tech" data-board="${key}" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '\u23f8' : '\u25b6'}</button>
+            <button class="toggle-skip" data-action="toggle-tech" data-board="${key}" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '⏸' : '▶'}</button>
           </div>`;
       }).join('')
     : '<div style="color:var(--text-dim); font-size:13.5px;">No techs yet.</div>';
@@ -525,7 +668,7 @@ function renderBoardSection(board){
             <option value="">Unassigned</option>
             ${techList.map(([tid, t]) => `<option value="${tid}" ${tid === ticket.assignedToId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
           </select>
-          <button class="del-btn" data-action="delete-ticket" data-board="${key}" data-id="${id}" title="Delete">\u2715</button>
+          <button class="del-btn" data-action="delete-ticket" data-board="${key}" data-id="${id}" title="Delete">✕</button>
         </div>
       `).join('')
     : '<div class="empty-state">No tickets dispatched yet.</div>';
@@ -596,7 +739,8 @@ function render(){
       </div>
       <div class="count-badge">
         <b>${totalTickets}</b>tickets
-        <div class="sync-status live"><span class="sync-dot"></span>synced</div>
+        <div class="sync-status ${isLive ? 'live' : 'offline'}"><span class="sync-dot"></span>${isLive ? 'synced' : 'reconnecting…'}</div>
+        <button class="signout-link" data-action="sign-out">Sign out</button>
       </div>
     </header>
 
@@ -629,8 +773,9 @@ function resetPriorityInput(key){
 function wireEvents(){
   const app = document.getElementById('app');
 
-  Object.values(boards).forEach(board => {
-    const key = board.key;
+  BOARD_DEFS.forEach(def => {
+    const board = boards[def.key];
+    const key = def.key;
 
     const addBtn = app.querySelector(`[data-action="add-ticket"][data-board="${key}"]`);
     if(addBtn){
@@ -685,9 +830,11 @@ function wireEvents(){
   app.querySelectorAll('[data-action="reset-tickets"]').forEach(btn => {
     btn.onclick = () => resetTickets(boards[btn.dataset.board]);
   });
+  const signOutBtn = app.querySelector('[data-action="sign-out"]');
+  if(signOutBtn){
+    signOutBtn.onclick = () => { auth.signOut().then(() => location.reload()); };
+  }
 }
-
-render();
 </script>
 </body>
 </html>
