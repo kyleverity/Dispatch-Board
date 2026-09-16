@@ -712,4 +712,57 @@ function render(){
   wireEvents();
 }
 
-f
+function wireEvents(){
+  const app = document.getElementById('app');
+
+  BOARD_DEFS.forEach(def => {
+    const board = boards[def.key];
+    const key = def.key;
+
+    const addBtn = app.querySelector(`[data-action="add-ticket"][data-board="${key}"]`);
+    if(addBtn){
+      addBtn.onclick = () => {
+        const titleInput = document.getElementById(`new-ticket-title-${key}`);
+        const prioritySelect = document.getElementById(`new-ticket-priority-${key}`);
+        const assigneeSelect = document.getElementById(`new-ticket-assignee-${key}`);
+        addTicket(board, titleInput.value, prioritySelect.value, assigneeSelect.value);
+        titleInput.value = '';
+        prioritySelect.value = 'Normal';
+        assigneeSelect.value = '';
+      };
+    }
+    const titleInput = document.getElementById(`new-ticket-title-${key}`);
+    if(titleInput){
+      titleInput.onkeydown = (e) => {
+        if(e.key === 'Enter'){
+          const prioritySelect = document.getElementById(`new-ticket-priority-${key}`);
+          const assigneeSelect = document.getElementById(`new-ticket-assignee-${key}`);
+          addTicket(board, titleInput.value, prioritySelect.value, assigneeSelect.value);
+          titleInput.value = '';
+          prioritySelect.value = 'Normal';
+          assigneeSelect.value = '';
+        }
+      };
+    }
+  });
+
+  app.querySelectorAll('[data-action="toggle-tech"]').forEach(btn => {
+    btn.onclick = () => toggleTechActive(boards[btn.dataset.board], btn.dataset.id);
+  });
+  app.querySelectorAll('[data-action="reassign"]').forEach(sel => {
+    sel.onchange = () => reassignTicket(boards[sel.dataset.board], sel.dataset.id, sel.value);
+  });
+  app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
+    btn.onclick = () => deleteTicket(boards[btn.dataset.board], btn.dataset.id);
+  });
+  app.querySelectorAll('[data-action="reset-tickets"]').forEach(btn => {
+    btn.onclick = () => resetTickets(boards[btn.dataset.board]);
+  });
+  const signOutBtn = app.querySelector('[data-action="sign-out"]');
+  if(signOutBtn){
+    signOutBtn.onclick = () => { auth.signOut().then(() => location.reload()); };
+  }
+}
+</script>
+</body>
+</html>
