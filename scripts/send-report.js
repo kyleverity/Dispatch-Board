@@ -4,6 +4,11 @@ const FIREBASE_API_KEY = 'AIzaSyBlp-SsWSfVik4Mnix-ifFDkaiswr2pCik';
 const DATABASE_URL = 'https://dispatch-rotation-tracker-default-rtdb.firebaseio.com';
 const REPORT_RECIPIENT = 'kyle.pizer@verity-it.com';
 
+const BOARD_DEFS = [
+  { key: 'helpdesk', label: 'Help Desk', techsPath: 'dispatch/techs', ticketsPath: 'dispatch/tickets', metaPath: 'dispatch/meta' },
+  { key: 'intake', label: 'Intake', techsPath: 'dispatch/intakeTechs', ticketsPath: 'dispatch/intakeTickets', metaPath: 'dispatch/intakeMeta' }
+];
+
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -30,6 +35,45 @@ function todayKeyEastern(){
   const map = {};
   parts.forEach(p => { map[p.type] = p.value; });
   return `${map.year}-${map.month}-${map.day}`;
+}
+
+function timeLabelFor(iso){
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  }).format(new Date(iso));
+}
+
+function renderBoardSectionText(label, rows){
+  if(rows.length === 0){
+    return `${label}\n  No tickets were dispatched today.`;
+  }
+  const lines = rows.map(r =>
+    `  #${String(r.num).padStart(4,'0')}  ${r.title}  [${r.priority}]  -> ${r.assignedTo}  (${r.time})`
+  );
+  return `${label}\n${lines.join('\n')}`;
+}
+
+function renderBoardSectionHtml(label, rows){
+  if(rows.length === 0){
+    return `<h3>${escapeHtml(label)}</h3><p>No tickets were dispatched today.</p>`;
+  }
+  return `
+    <h3>${escapeHtml(label)}</h3>
+    <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:sans-serif; font-size:13px; margin-bottom:20px;">
+      <tr style="text-align:left; border-bottom:2px solid #333;">
+        <th>#</th><th>Ticket</th><th>Priority</th><th>Assigned To</th><th>Time</th>
+      </tr>
+      ${rows.map(r => `
+        <tr style="border-bottom:1px solid #ddd;">
+          <td>#${String(r.num).padStart(4,'0')}</td>
+          <td>${escapeHtml(r.title)}</td>
+          <td>${escapeHtml(r.priority)}</td>
+          <td>${escapeHtml(r.assignedTo)}</td>
+          <td>${r.time}</td>
+        </tr>`).join('')}
+    </table>
+  `;
 }
 
 async function main(){
@@ -60,55 +104,28 @@ async function main(){
   }
   const idToken = signInData.idToken;
 
-  const ticketsRes = await fetch(`${DATABASE_URL}/dispatch/tickets.json?auth=${idToken}`);
-  const ticketsObj = (await ticketsRes.json()) || {};
-  const tickets = Object.values(ticketsObj).sort((a, b) => (a.num || 0) - (b.num || 0));
+  // Fetch each board's tickets
+  const boardRows = {};
+  for(const def of BOARD_DEFS){
+    const res = await fetch(`${DATABASE_URL}/${def.ticketsPath}.json?auth=${idToken}`);
+    const obj = (await res.json()) || {};
+    const tickets = Object.values(obj).sort((a, b) => (a.num || 0) - (b.num || 0));
+    boardRows[def.key] = tickets.map(t => ({
+      num: t.num,
+      title: t.title || '',
+      priority: t.priority || '',
+      assignedTo: t.assignedToName || 'Unassigned',
+      time: timeLabelFor(t.createdAt)
+    }));
+  }
 
   const dateLabel = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   }).format(new Date());
 
-  let bodyText, bodyHtml;
-  if(tickets.length === 0){
-    bodyText = 'No tickets were dispatched today.';
-    bodyHtml = '<p>No tickets were dispatched today.</p>';
-  } else {
-    const rows = tickets.map(t => {
-      const created = new Date(t.createdAt);
-      const timeLabel = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-      }).format(created);
-      return {
-        num: t.num,
-        title: t.title || '',
-        priority: t.priority || '',
-        assignedTo: t.assignedToName || 'Unassigned',
-        time: timeLabel
-      };
-    });
-
-    bodyText = rows.map(r =>
-      `#${String(r.num).padStart(4,'0')}  ${r.title}  [${r.priority}]  -> ${r.assignedTo}  (${r.time})`
-    ).join('\n');
-
-    bodyHtml = `
-      <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:sans-serif; font-size:13px;">
-        <tr style="text-align:left; border-bottom:2px solid #333;">
-          <th>#</th><th>Ticket</th><th>Priority</th><th>Assigned To</th><th>Time</th>
-        </tr>
-        ${rows.map(r => `
-          <tr style="border-bottom:1px solid #ddd;">
-            <td>#${String(r.num).padStart(4,'0')}</td>
-            <td>${escapeHtml(r.title)}</td>
-            <td>${escapeHtml(r.priority)}</td>
-            <td>${escapeHtml(r.assignedTo)}</td>
-            <td>${r.time}</td>
-          </tr>`).join('')}
-      </table>
-    `;
-  }
+  const bodyText = BOARD_DEFS.map(def => renderBoardSectionText(def.label, boardRows[def.key])).join('\n\n');
+  const bodyHtml = BOARD_DEFS.map(def => renderBoardSectionHtml(def.label, boardRows[def.key])).join('');
 
   const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -122,38 +139,47 @@ async function main(){
     from: `Dispatch Tracker <${process.env.GMAIL_USER}>`,
     to: REPORT_RECIPIENT,
     subject: `Dispatch Report — ${dateLabel}`,
-    text: bodyText,
+    text: `Dispatch Report — ${dateLabel}\n\n${bodyText}`,
     html: `<h2>Dispatch Report — ${dateLabel}</h2>${bodyHtml}`
   });
 
   console.log('Report sent to ' + REPORT_RECIPIENT);
 
   if(!withinWindow){
-    console.log('Force-tested outside the real window — leaving the board untouched (no reset).');
+    console.log('Force-tested outside the real window — leaving the boards untouched (no reset).');
     return;
   }
 
-  const techsRes = await fetch(`${DATABASE_URL}/dispatch/techs.json?auth=${idToken}`);
-  const techsObj = (await techsRes.json()) || {};
-  const sortedTechs = Object.entries(techsObj).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
-  const firstTechId = sortedTechs.length ? sortedTechs[0][0] : null;
+  // Reset every board's tickets and rotation pointer in one combined update
+  const resetPatch = {};
+  for(const def of BOARD_DEFS){
+    const techsRes = await fetch(`${DATABASE_URL}/${def.techsPath}.json?auth=${idToken}`);
+    const techsObj = (await techsRes.json()) || {};
+    const sortedTechs = Object.entries(techsObj).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+    const firstTechId = sortedTechs.length ? sortedTechs[0][0] : null;
+
+    // Paths are like "dispatch/tickets" / "dispatch/intakeTickets" — strip the
+    // leading "dispatch/" since the PATCH below targets the dispatch node itself.
+    const ticketsKey = def.ticketsPath.replace(/^dispatch\//, '');
+    const metaKey = def.metaPath.replace(/^dispatch\//, '');
+
+    resetPatch[ticketsKey] = null;
+    resetPatch[metaKey] = {
+      nextTechId: firstTechId,
+      nextTicketNum: 1,
+      lastResetDate: todayKeyEastern()
+    };
+  }
 
   const resetRes = await fetch(`${DATABASE_URL}/dispatch.json?auth=${idToken}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tickets: null,
-      meta: {
-        nextTechId: firstTechId,
-        nextTicketNum: 1,
-        lastResetDate: todayKeyEastern()
-      }
-    })
+    body: JSON.stringify(resetPatch)
   });
   if(!resetRes.ok){
     throw new Error('Reset failed: ' + (await resetRes.text()));
   }
-  console.log('Board reset for the new day — rotation back to the top.');
+  console.log('Both boards reset for the new day — rotations back to the top.');
 }
 
 main().catch(err => {
