@@ -113,12 +113,13 @@
   .tech-chip{
     display:flex;
     align-items:center;
-    gap:8px;
-    padding: 8px 12px;
+    gap:6px;
+    height: 26px;
+    padding: 0 10px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 7px;
-    font-size: 13.5px;
+    font-size: 12.5px;
     transition: border-color .15s, background .15s;
   }
   .tech-chip .num{
@@ -158,6 +159,10 @@
     outline: none;
   }
   input:focus, select:focus{ border-color: var(--amber); }
+  .ticket-row select{
+    padding: 3px 6px;
+    font-size: 12px;
+  }
   input::placeholder{ color: var(--text-dim); }
 
   button.primary{
@@ -203,9 +208,9 @@
     grid-template-columns: 62px 1fr auto auto 28px;
     align-items:center;
     gap: 12px;
-    padding: 13px 4px;
+    padding: 4px 4px;
     border-bottom: 1px solid var(--border);
-    font-size: 13.5px;
+    font-size: 12.5px;
   }
   .ticket-row:first-of-type{ border-top: 1px solid var(--border); }
   .ticket-id{
@@ -222,14 +227,14 @@
   }
   .ticket-title .meta{
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--text-dim);
-    margin-top: 2px;
+    margin-top: 1px;
   }
   .priority-tag{
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 500;
-    padding: 3px 8px;
+    padding: 1px 6px;
     border-radius: 4px;
     white-space: nowrap;
     font-family: 'IBM Plex Mono', monospace;
@@ -295,6 +300,25 @@
     min-height: 16px;
   }
 
+  .board-group{ margin-bottom: 42px; }
+  .board-group:last-child{ margin-bottom: 30px; }
+  .board-title{
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    padding-left: 11px;
+    border-left: 3px solid var(--amber);
+    margin-bottom: 20px;
+  }
+  .board-count{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 400;
+    margin-left: 8px;
+  }
+
   @media (max-width: 560px){
     .ticket-row{
       grid-template-columns: 1fr;
@@ -321,13 +345,27 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-const techsRef = db.ref('dispatch/techs');
-const ticketsRef = db.ref('dispatch/tickets');
-const metaRef = db.ref('dispatch/meta');
-const seededRef = db.ref('dispatch/seeded');
-
-const DEFAULT_TECH_NAMES = ['Andy', 'Brian', 'Andrew', 'Arpita', 'Chris'];
 let appStarted = false;
+let isLive = false;
+
+/* ---------- Board definitions ----------
+   Help Desk keeps its original (unprefixed) paths for backward compatibility
+   with data that already exists. Intake uses its own paths alongside it,
+   nested under the same "dispatch" node so the existing security rules
+   (which already scope to /dispatch) automatically cover it too. */
+const BOARD_DEFS = [
+  { key: 'helpdesk', label: 'Help Desk', techsPath: 'dispatch/techs', ticketsPath: 'dispatch/tickets', metaPath: 'dispatch/meta', seededPath: 'dispatch/seeded', defaultNames: ['Andy', 'Brian', 'Andrew', 'Arpita', 'Chris'] },
+  { key: 'intake', label: 'Intake', techsPath: 'dispatch/intakeTechs', ticketsPath: 'dispatch/intakeTickets', metaPath: 'dispatch/intakeMeta', seededPath: 'dispatch/intakeSeeded', defaultNames: ['Ian', 'Kevin', 'Sean', 'Chalcie'] }
+];
+
+const boards = {};
+BOARD_DEFS.forEach(def => {
+  boards[def.key] = Object.assign({}, def, {
+    techs: {}, tickets: {},
+    meta: { nextTechId: null, nextTicketNum: 1, lastResetDate: '' },
+    gotTechs: false, gotTickets: false, gotMeta: false
+  });
+});
 
 function todayKey(){
   const d = new Date();
@@ -385,63 +423,70 @@ function escapeHtml(s){
 /* ---------- Everything below only runs once someone is signed in ---------- */
 function startApp(){
 
-/* Seed default data once, safely even if multiple people load it for the first time at once */
-seededRef.transaction(current => current ? undefined : true, (err, committed) => {
-  if(!err && committed){
-    const updates = {};
-    const keys = DEFAULT_TECH_NAMES.map(() => techsRef.push().key);
-    DEFAULT_TECH_NAMES.forEach((name, i) => {
-      updates['dispatch/techs/' + keys[i]] = { name, active: true, order: i };
-    });
-    updates['dispatch/meta'] = { nextTechId: keys[0], nextTicketNum: 1, lastResetDate: todayKey() };
-    db.ref().update(updates);
-  }
-});
+  BOARD_DEFS.forEach(def => seedBoard(boards[def.key]));
+  BOARD_DEFS.forEach(def => attachListeners(boards[def.key]));
 
+  db.ref('.info/connected').on('value', snap => {
+    isLive = snap.val() === true;
+    maybeRender();
+  });
 
-/* ---------- Local mirror of the shared data ---------- */
-let techs = {};
-let tickets = {};
-let meta = { nextTechId: null, nextTicketNum: 1, lastResetDate: todayKey() };
-let gotTechs = false, gotTickets = false, gotMeta = false;
-let isLive = false;
+  /* Safety-net full refresh every 2 minutes, in case a connection silently drops.
+     Live changes already appear instantly via the Firebase listeners below. */
+  setInterval(() => location.reload(), 2 * 60 * 1000);
+}
 
-techsRef.on('value', snap => {
-  techs = snap.val() || {};
-  gotTechs = true;
-  maybeRender();
-});
-ticketsRef.on('value', snap => {
-  tickets = snap.val() || {};
-  gotTickets = true;
-  maybeRender();
-});
-metaRef.on('value', snap => {
-  meta = snap.val() || meta;
-  gotMeta = true;
-  checkAutoReset();
-  maybeRender();
-});
-db.ref('.info/connected').on('value', snap => {
-  isLive = snap.val() === true;
-  if(gotTechs && gotTickets && gotMeta) render();
-});
+function seedBoard(board){
+  const seededRef = db.ref(board.seededPath);
+  seededRef.transaction(current => current ? undefined : true, (err, committed) => {
+    if(!err && committed){
+      const techsRef = db.ref(board.techsPath);
+      const updates = {};
+      const keys = board.defaultNames.map(() => techsRef.push().key);
+      board.defaultNames.forEach((name, i) => {
+        updates[board.techsPath + '/' + keys[i]] = { name, active: true, order: i };
+      });
+      updates[board.metaPath] = { nextTechId: keys[0], nextTicketNum: 1, lastResetDate: todayKey() };
+      db.ref().update(updates);
+    }
+  });
+}
+
+function attachListeners(board){
+  db.ref(board.techsPath).on('value', snap => {
+    board.techs = snap.val() || {};
+    board.gotTechs = true;
+    maybeRender();
+  });
+  db.ref(board.ticketsPath).on('value', snap => {
+    board.tickets = snap.val() || {};
+    board.gotTickets = true;
+    maybeRender();
+  });
+  db.ref(board.metaPath).on('value', snap => {
+    board.meta = snap.val() || board.meta;
+    board.gotMeta = true;
+    checkAutoReset(board);
+    maybeRender();
+  });
+}
 
 function maybeRender(){
-  if(gotTechs && gotTickets && gotMeta) render();
+  const allReady = Object.values(boards).every(b => b.gotTechs && b.gotTickets && b.gotMeta);
+  if(allReady) render();
 }
 
 /* ---------- Helpers ---------- */
-function activeTechEntries(){
-  return Object.entries(techs)
+function activeTechEntries(board){
+  return Object.entries(board.techs)
     .filter(([, t]) => t.active)
     .sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
 }
-function allTechEntriesSorted(){
-  return Object.entries(techs).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+function allTechEntriesSorted(board){
+  return Object.entries(board.techs).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
 }
-function ticketEntriesSorted(){
-  return Object.entries(tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
+function ticketEntriesSorted(board){
+  return Object.entries(board.tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
 }
 function fmtTime(iso){
   const d = new Date(iso);
@@ -449,39 +494,33 @@ function fmtTime(iso){
          d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit'});
 }
 function pad(n){ return '#' + String(n).padStart(4,'0'); }
-
-/* ---------- Mutations (write straight to Firebase; the listener re-renders everyone) ---------- */
-
-function removeTech(id){
-  const updates = {};
-  updates['dispatch/techs/' + id] = null;
-  if(meta.nextTechId === id){
-    const remaining = activeTechEntries().filter(([k]) => k !== id);
-    updates['dispatch/meta/nextTechId'] = remaining.length ? remaining[0][0] : null;
-  }
-  db.ref().update(updates);
+function firstTechId(board){
+  const sorted = allTechEntriesSorted(board);
+  return sorted.length ? sorted[0][0] : null;
 }
 
-function toggleTechActive(id){
-  const t = techs[id];
+/* ---------- Mutations (write straight to Firebase; the listener re-renders everyone) ---------- */
+function toggleTechActive(board, id){
+  const t = board.techs[id];
   if(!t) return;
   const newActive = !t.active;
   const updates = {};
-  updates['dispatch/techs/' + id + '/active'] = newActive;
-  if(!newActive && meta.nextTechId === id){
-    const remaining = activeTechEntries().filter(([k]) => k !== id);
-    updates['dispatch/meta/nextTechId'] = remaining.length ? remaining[0][0] : null;
+  updates[board.techsPath + '/' + id + '/active'] = newActive;
+  if(!newActive && board.meta.nextTechId === id){
+    const remaining = activeTechEntries(board).filter(([k]) => k !== id);
+    updates[board.metaPath + '/nextTechId'] = remaining.length ? remaining[0][0] : null;
   }
   db.ref().update(updates);
 }
 
-function addTicket(title, priority, assigneeId){
+function addTicket(board, title, priority, assigneeId){
   title = title.trim();
   if(!title) return;
+  const ticketsRef = db.ref(board.ticketsPath);
+  const metaRef = db.ref(board.metaPath);
 
   if(assigneeId){
-    // Manually assigned — doesn't touch the rotation pointer at all.
-    const tech = techs[assigneeId];
+    const tech = board.techs[assigneeId];
     if(!tech) return;
     let ticketNum = 1;
     metaRef.transaction(current => {
@@ -503,8 +542,7 @@ function addTicket(title, priority, assigneeId){
     return;
   }
 
-  // Next in rotation — assigns to whoever's on deck and advances the pointer.
-  const active = activeTechEntries();
+  const active = activeTechEntries(board);
   if(active.length === 0) return;
 
   let assignedId = null, assignedName = 'Unassigned', ticketNum = 1;
@@ -536,65 +574,58 @@ function addTicket(title, priority, assigneeId){
   });
 }
 
-function reassignTicket(ticketId, techId){
-  const tech = techs[techId];
-  ticketsRef.child(ticketId).update({
+function reassignTicket(board, ticketId, techId){
+  const tech = board.techs[techId];
+  db.ref(board.ticketsPath).child(ticketId).update({
     assignedToId: techId || null,
     assignedToName: tech ? tech.name : 'Unassigned'
   });
 }
 
-function deleteTicket(ticketId){
-  ticketsRef.child(ticketId).remove();
+function deleteTicket(board, ticketId){
+  db.ref(board.ticketsPath).child(ticketId).remove();
 }
 
-function firstTechId(){
-  const sorted = allTechEntriesSorted();
-  return sorted.length ? sorted[0][0] : null;
-}
-
-function resetTickets(){
-  const typed = prompt('This clears all tickets for everyone and resets the rotation back to the top.\n\nType RESET to confirm:');
+function resetTickets(board){
+  const typed = prompt(`This clears all ${board.label} tickets for everyone and resets that rotation back to the top.\n\nType RESET to confirm:`);
   if(!typed || typed.trim().toUpperCase() !== 'RESET') return;
   const updates = {};
-  updates['dispatch/tickets'] = null;
-  updates['dispatch/meta/nextTicketNum'] = 1;
-  updates['dispatch/meta/lastResetDate'] = todayKey();
-  updates['dispatch/meta/nextTechId'] = firstTechId();
+  updates[board.ticketsPath] = null;
+  updates[board.metaPath + '/nextTicketNum'] = 1;
+  updates[board.metaPath + '/lastResetDate'] = todayKey();
+  updates[board.metaPath + '/nextTechId'] = firstTechId(board);
   db.ref().update(updates);
 }
 
-function checkAutoReset(){
+function checkAutoReset(board){
   const today = todayKey();
-  if(meta.lastResetDate && meta.lastResetDate !== today){
+  if(board.meta.lastResetDate && board.meta.lastResetDate !== today){
     const updates = {};
-    updates['dispatch/tickets'] = null;
-    updates['dispatch/meta/nextTicketNum'] = 1;
-    updates['dispatch/meta/lastResetDate'] = today;
-    updates['dispatch/meta/nextTechId'] = firstTechId();
+    updates[board.ticketsPath] = null;
+    updates[board.metaPath + '/nextTicketNum'] = 1;
+    updates[board.metaPath + '/lastResetDate'] = today;
+    updates[board.metaPath + '/nextTechId'] = firstTechId(board);
     db.ref().update(updates);
   }
 }
 
 /* ---------- Render ---------- */
-function render(){
-  const app = document.getElementById('app');
-
-  const ticketList = ticketEntriesSorted();
-  const ticketCount = ticketList.length;
-  const techList = allTechEntriesSorted();
+function renderBoardSection(board){
+  const ticketList = ticketEntriesSorted(board);
+  const techList = allTechEntriesSorted(board);
+  const key = board.key;
 
   const rotationHtml = techList.length
     ? techList.map(([id, t], i) => {
-        const isOnDeck = id === meta.nextTechId && t.active;
+        const isOnDeck = id === board.meta.nextTechId && t.active;
         return `
           <div class="tech-chip ${isOnDeck ? 'on-deck' : ''} ${!t.active ? 'skipped' : ''}">
             <span class="num">${i+1}</span>
             <span class="name">${escapeHtml(t.name)}</span>
-            <button class="toggle-skip" data-action="toggle-tech" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '⏸' : '▶'}</button>
+            <button class="toggle-skip" data-action="toggle-tech" data-board="${key}" data-id="${id}" title="${t.active ? 'Mark unavailable' : 'Mark available'}">${t.active ? '⏸' : '▶'}</button>
           </div>`;
       }).join('')
-    : '<div style="color:var(--text-dim); font-size:13.5px;">No techs yet — add your team below.</div>';
+    : '<div style="color:var(--text-dim); font-size:13.5px;">No techs yet.</div>';
 
   const ticketsHtml = ticketList.length
     ? ticketList.map(([id, ticket]) => `
@@ -605,14 +636,58 @@ function render(){
             <div class="meta">${fmtTime(ticket.createdAt)}</div>
           </div>
           <div class="priority-tag priority-${ticket.priority}">${ticket.priority}</div>
-          <select data-action="reassign" data-id="${id}" title="Reassign">
+          <select data-action="reassign" data-board="${key}" data-id="${id}" title="Reassign">
             <option value="">Unassigned</option>
             ${techList.map(([tid, t]) => `<option value="${tid}" ${tid === ticket.assignedToId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
           </select>
-          <button class="del-btn" data-action="delete-ticket" data-id="${id}" title="Delete">✕</button>
+          <button class="del-btn" data-action="delete-ticket" data-board="${key}" data-id="${id}" title="Delete">✕</button>
         </div>
       `).join('')
-    : '<div class="empty-state">No tickets dispatched yet. Add one below — it\'ll go to whoever is on deck.</div>';
+    : '<div class="empty-state">No tickets dispatched yet.</div>';
+
+  return `
+    <div class="board-group">
+      <div class="board-title">${escapeHtml(board.label)}<span class="board-count">${ticketList.length} ticket${ticketList.length === 1 ? '' : 's'}</span></div>
+
+      <section>
+        <h2>ROTATION</h2>
+        <div class="rotation-strip">${rotationHtml}</div>
+      </section>
+
+      <section>
+        <h2>NEW TICKET</h2>
+        <div class="ticket-form">
+          <input type="text" id="new-ticket-title-${key}" placeholder="What needs doing?" />
+          <select id="new-ticket-priority-${key}">
+            <option>Normal</option>
+            <option>Low</option>
+            <option>High</option>
+            <option>Urgent</option>
+          </select>
+          <select id="new-ticket-assignee-${key}" title="Who gets this ticket">
+            <option value="">Next in rotation</option>
+            ${activeTechEntries(board).map(([id, t]) => `<option value="${id}">${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+          <button class="primary" data-action="add-ticket" data-board="${key}" ${activeTechEntries(board).length === 0 ? 'disabled' : ''}>Dispatch</button>
+        </div>
+        ${activeTechEntries(board).length === 0 ? '<div style="color:var(--text-dim); font-size:12.5px; margin-top:8px;">Add at least one available tech to dispatch a ticket.</div>' : ''}
+      </section>
+
+      <section>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <h2 style="margin:0;">TICKETS</h2>
+          <button class="ghost" data-action="reset-tickets" data-board="${key}">Reset now</button>
+        </div>
+        <div style="color:var(--text-dim); font-size:12px; margin-bottom:12px;">Resets automatically at midnight, rotation back to the top.</div>
+        ${ticketsHtml}
+      </section>
+    </div>
+  `;
+}
+
+function render(){
+  const app = document.getElementById('app');
+  const totalTickets = Object.values(boards).reduce((sum, b) => sum + ticketEntriesSorted(b).length, 0);
 
   app.innerHTML = `
     <header class="top">
@@ -624,102 +699,17 @@ function render(){
         <p>Tickets route to whoever is on deck, in order. Shared live with everyone on this link.</p>
       </div>
       <div class="count-badge">
-        <b>${ticketCount}</b>tickets
+        <b>${totalTickets}</b>tickets
         <div class="sync-status ${isLive ? 'live' : 'offline'}"><span class="sync-dot"></span>${isLive ? 'synced' : 'reconnecting…'}</div>
         <button class="signout-link" data-action="sign-out">Sign out</button>
       </div>
     </header>
 
-    <section>
-      <h2>ROTATION</h2>
-      <div class="rotation-strip">${rotationHtml}</div>
-    </section>
-
-    <section>
-      <h2>NEW TICKET</h2>
-      <div class="ticket-form">
-        <input type="text" id="new-ticket-title" placeholder="What needs doing?" />
-        <select id="new-ticket-priority">
-          <option>Normal</option>
-          <option>Low</option>
-          <option>High</option>
-          <option>Urgent</option>
-        </select>
-        <select id="new-ticket-assignee" title="Who gets this ticket">
-          <option value="">Next in rotation</option>
-          ${activeTechEntries().map(([id, t]) => `<option value="${id}">${escapeHtml(t.name)}</option>`).join('')}
-        </select>
-        <button class="primary" data-action="add-ticket" ${activeTechEntries().length === 0 ? 'disabled' : ''}>Dispatch</button>
-      </div>
-      ${activeTechEntries().length === 0 ? '<div style="color:var(--text-dim); font-size:12.5px; margin-top:8px;">Add at least one available tech to dispatch a ticket.</div>' : ''}
-    </section>
-
-    <section>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-        <h2 style="margin:0;">TICKETS</h2>
-        <button class="ghost" data-action="reset-tickets">Reset now</button>
-      </div>
-      <div style="color:var(--text-dim); font-size:12px; margin-bottom:12px;">Resets for everyone automatically at midnight, rotation back to the top.</div>
-      ${ticketsHtml}
-    </section>
+    ${renderBoardSection(boards.helpdesk)}
+    ${renderBoardSection(boards.intake)}
   `;
 
   wireEvents();
 }
 
-function wireEvents(){
-  const app = document.getElementById('app');
-
-  const addTicketBtn = app.querySelector('[data-action="add-ticket"]');
-  if(addTicketBtn){
-    addTicketBtn.onclick = () => {
-      const titleInput = document.getElementById('new-ticket-title');
-      const prioritySelect = document.getElementById('new-ticket-priority');
-      const assigneeSelect = document.getElementById('new-ticket-assignee');
-      addTicket(titleInput.value, prioritySelect.value, assigneeSelect.value);
-      titleInput.value = '';
-      prioritySelect.value = 'Normal';
-      assigneeSelect.value = '';
-    };
-  }
-  const ticketTitleInput = document.getElementById('new-ticket-title');
-  if(ticketTitleInput){
-    ticketTitleInput.onkeydown = (e) => {
-      if(e.key === 'Enter'){
-        const prioritySelect = document.getElementById('new-ticket-priority');
-        const assigneeSelect = document.getElementById('new-ticket-assignee');
-        addTicket(ticketTitleInput.value, prioritySelect.value, assigneeSelect.value);
-        ticketTitleInput.value = '';
-        prioritySelect.value = 'Normal';
-        assigneeSelect.value = '';
-      }
-    };
-  }
-
-  app.querySelectorAll('[data-action="toggle-tech"]').forEach(btn => {
-    btn.onclick = () => toggleTechActive(btn.dataset.id);
-  });
-  app.querySelectorAll('[data-action="reassign"]').forEach(sel => {
-    sel.onchange = () => reassignTicket(sel.dataset.id, sel.value);
-  });
-  app.querySelectorAll('[data-action="delete-ticket"]').forEach(btn => {
-    btn.onclick = () => deleteTicket(btn.dataset.id);
-  });
-  const resetBtn = app.querySelector('[data-action="reset-tickets"]');
-  if(resetBtn){
-    resetBtn.onclick = resetTickets;
-  }
-  const signOutBtn = app.querySelector('[data-action="sign-out"]');
-  if(signOutBtn){
-    signOutBtn.onclick = () => { auth.signOut().then(() => location.reload()); };
-  }
-}
-
-/* Safety-net full refresh every 2 minutes, in case a connection silently drops.
-   Live changes already appear instantly via the Firebase listeners above. */
-setInterval(() => location.reload(), 2 * 60 * 1000);
-
-} /* end startApp */
-</script>
-</body>
-</html>
+f
