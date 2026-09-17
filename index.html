@@ -205,7 +205,7 @@
   /* Ticket list */
   .ticket-row{
     display:grid;
-    grid-template-columns: 62px 1fr auto auto 28px;
+    grid-template-columns: 1fr auto auto 28px;
     align-items:center;
     gap: 12px;
     padding: 4px 4px;
@@ -213,23 +213,30 @@
     font-size: 12.5px;
   }
   .ticket-row:first-of-type{ border-top: 1px solid var(--border); }
-  .ticket-id{
-    font-family: 'IBM Plex Mono', monospace;
-    color: var(--text-dim);
-    font-size: 12px;
+  .ticket-title{
+    display:flex;
+    align-items:baseline;
+    gap: 9px;
+    min-width:0;
   }
-  .ticket-title{ min-width:0; }
+  .ticket-title .ticket-num{
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
   .ticket-title .t{
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
   }
   .ticket-title .meta{
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10.5px;
     color: var(--text-dim);
-    margin-top: 1px;
+    flex-shrink: 0;
   }
   .priority-tag{
     font-size: 10px;
@@ -352,7 +359,6 @@
       grid-template-columns: 1fr;
       row-gap: 6px;
     }
-    .ticket-id{ order: -1; }
   }
 </style>
 </head>
@@ -516,10 +522,11 @@ function allTechEntriesSorted(board){
 function ticketEntriesSorted(board){
   return Object.entries(board.tickets).sort((a, b) => (b[1].num || 0) - (a[1].num || 0));
 }
-function fmtTime(iso){
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month:'short', day:'numeric'}) + ' · ' +
-         d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit'});
+function fmtDate(iso){
+  return new Date(iso).toLocaleDateString(undefined, { month:'short', day:'numeric'});
+}
+function fmtClock(iso){
+  return new Date(iso).toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit'});
 }
 function pad(n){ return '#' + String(n).padStart(4,'0'); }
 function firstTechId(board){
@@ -658,10 +665,11 @@ function renderBoardSection(board){
   const ticketsHtml = ticketList.length
     ? ticketList.map(([id, ticket]) => `
         <div class="ticket-row">
-          <div class="ticket-id mono">${pad(ticket.num)}</div>
           <div class="ticket-title">
-            <div class="t">${escapeHtml(ticket.title)}</div>
-            <div class="meta">${fmtTime(ticket.createdAt)}</div>
+            <span class="ticket-num mono">${pad(ticket.num)}</span>
+            <span class="t">${escapeHtml(ticket.title)}</span>
+            <span class="meta mono">${fmtDate(ticket.createdAt)}</span>
+            <span class="meta mono">${fmtClock(ticket.createdAt)}</span>
           </div>
           <div class="priority-tag priority-${ticket.priority}">${ticket.priority}</div>
           <select data-action="reassign" data-board="${key}" data-id="${id}" title="Reassign">
