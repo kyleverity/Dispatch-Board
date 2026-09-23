@@ -542,8 +542,20 @@ function toggleTechActive(board, id){
   const updates = {};
   updates[board.techsPath + '/' + id + '/active'] = newActive;
   if(!newActive && board.meta.nextTechId === id){
-    const remaining = activeTechEntries(board).filter(([k]) => k !== id);
-    updates[board.metaPath + '/nextTechId'] = remaining.length ? remaining[0][0] : null;
+    // Walk forward from this tech's position in the full rotation order,
+    // wrapping around, to find the next OTHER active tech — rather than
+    // jumping back to whoever happens to have the lowest order.
+    const allSorted = allTechEntriesSorted(board);
+    const idx = allSorted.findIndex(([k]) => k === id);
+    let nextId = null;
+    for(let i = 1; i <= allSorted.length; i++){
+      const candidate = allSorted[(idx + i) % allSorted.length];
+      if(candidate[0] !== id && candidate[1].active){
+        nextId = candidate[0];
+        break;
+      }
+    }
+    updates[board.metaPath + '/nextTechId'] = nextId;
   }
   db.ref().update(updates);
 }
