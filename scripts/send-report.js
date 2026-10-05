@@ -143,11 +143,15 @@ async function main(){
   const { hour, minute, weekday } = nowInEastern();
   const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
   const minutesIntoDay = hour * 60 + minute;
-  const withinWindow = hour === 23 && minute >= 50;
+  // 9:00-11:59 PM Eastern (dispatching stops at 5 PM Central, so 9 PM is safely after).
+  // The workflow tries several times in this stretch, because GitHub often starts
+  // scheduled runs late (or occasionally drops one). The lastReportDate marker below
+  // makes sure extra attempts never send a second report.
+  const withinWindow = hour >= 21 && hour <= 23;
   const withinPauseWindow = minutesIntoDay >= PAUSE_TIME_MINUTES && minutesIntoDay < PAUSE_TIME_MINUTES + 60;
   const forceSend = process.env.FORCE_SEND === 'true';
   const forcePause = process.env.FORCE_PAUSE === 'true';
-  const doReport = forceSend || (withinWindow && isWeekday);
+  let doReport = forceSend || (withinWindow && isWeekday);
   const doPause = forcePause || (withinPauseWindow && isWeekday);
 
   if(forceSend) console.log('Force-send enabled — skipping the report time-window check.');
@@ -175,6 +179,18 @@ async function main(){
 
   if(doPause){
     await applyScheduledPauses(idToken);
+  }
+
+  // Several attempts are scheduled each night. If an earlier one already sent tonight's
+  // report (and reset the boards), this one has nothing to do. Manual force-sends skip
+  // this check so you can still test whenever you like.
+  if(doReport && !forceSend){
+    const sentRes = await fetch(`${DATABASE_URL}/dispatch/lastReportDate.json?auth=${idToken}`);
+    const lastReportDate = await sentRes.json();
+    if(lastReportDate === todayKeyEastern()){
+      console.log(`Tonight's report was already sent (${lastReportDate}) — nothing more to do.`);
+      doReport = false;
+    }
   }
   if(!doReport){
     return;
@@ -228,6 +244,7 @@ async function main(){
 
   // Reset every board's tickets and rotation pointer in one combined update
   const resetPatch = {};
+  resetPatch.lastReportDate = todayKeyEastern(); // marks tonight as done so retries skip
   for(const def of BOARD_DEFS){
     const techsRes = await fetch(`${DATABASE_URL}/${def.techsPath}.json?auth=${idToken}`);
     const techsObj = (await techsRes.json()) || {};
