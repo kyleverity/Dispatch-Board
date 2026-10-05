@@ -20,11 +20,12 @@ function nowInEastern(){
     timeZone: 'America/New_York',
     hour: 'numeric',
     minute: 'numeric',
+    weekday: 'short',
     hour12: false
   }).formatToParts(new Date());
   const map = {};
   parts.forEach(p => { map[p.type] = p.value; });
-  return { hour: parseInt(map.hour, 10), minute: parseInt(map.minute, 10) };
+  return { hour: parseInt(map.hour, 10), minute: parseInt(map.minute, 10), weekday: map.weekday };
 }
 
 function todayKeyEastern(){
@@ -136,19 +137,24 @@ async function main(){
   // landing in the right Eastern-time window does anything:
   //   - 3:30-4:29 PM  -> apply the scheduled pauses (e.g. Arpita leaving at 3:30)
   //   - 11:50-11:59 PM -> send the report, then reset the boards for the new day
-  const { hour, minute } = nowInEastern();
+  // Both only happen Monday through Friday (by the Eastern-time calendar day). That
+  // also keeps the pause from firing on a weekend, which would leave Arpita paused
+  // until the next weeknight reset.
+  const { hour, minute, weekday } = nowInEastern();
+  const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
   const minutesIntoDay = hour * 60 + minute;
   const withinWindow = hour === 23 && minute >= 50;
   const withinPauseWindow = minutesIntoDay >= PAUSE_TIME_MINUTES && minutesIntoDay < PAUSE_TIME_MINUTES + 60;
   const forceSend = process.env.FORCE_SEND === 'true';
   const forcePause = process.env.FORCE_PAUSE === 'true';
-  const doReport = forceSend || withinWindow;
-  const doPause = forcePause || withinPauseWindow;
+  const doReport = forceSend || (withinWindow && isWeekday);
+  const doPause = forcePause || (withinPauseWindow && isWeekday);
 
   if(forceSend) console.log('Force-send enabled — skipping the report time-window check.');
   if(forcePause) console.log('Force-pause enabled — skipping the pause time-window check.');
   if(!doReport && !doPause){
-    console.log(`Skipping this run — it's ${hour}:${String(minute).padStart(2,'0')} Eastern, not a target window.`);
+    const why = (!isWeekday && (withinWindow || withinPauseWindow)) ? 'weekend — no report or reset' : 'not a target window';
+    console.log(`Skipping this run — it's ${weekday} ${hour}:${String(minute).padStart(2,'0')} Eastern (${why}).`);
     return;
   }
 
@@ -215,8 +221,8 @@ async function main(){
 
   console.log('Report sent to ' + REPORT_RECIPIENT);
 
-  if(!withinWindow){
-    console.log('Force-tested outside the real window — leaving the boards untouched (no reset).');
+  if(!(withinWindow && isWeekday)){
+    console.log('Force-tested outside the real weeknight window — leaving the boards untouched (no reset).');
     return;
   }
 
