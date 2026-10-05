@@ -8,8 +8,11 @@ on:
     # DST changes.
     - cron: '30 19 * * *' # 3:30 PM EDT (UTC-4) - scheduled pauses
     - cron: '30 20 * * *' # 3:30 PM EST (UTC-5) - scheduled pauses
-    - cron: '55 3 * * *'  # 11:55 PM EDT (UTC-4) - report + nightly reset
-    - cron: '55 4 * * *'  # 11:55 PM EST (UTC-5) - report + nightly reset
+    # Report + nightly reset: attempts every 30 min from ~9 PM to ~midnight Eastern,
+    # because GitHub often starts scheduled runs late or drops one. The script only acts
+    # inside 9:00-11:59 PM Eastern and only the first attempt sends; the rest see it's
+    # already done and exit. (01-04 UTC covers both EDT and EST.)
+    - cron: '5,35 1-4 * * *'
   workflow_dispatch:
     inputs:
       force:
