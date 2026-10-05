@@ -2,15 +2,22 @@ name: Nightly Dispatch Report
 
 on:
   schedule:
-    # Both entries exist to cover Eastern Daylight Time and Eastern Standard Time.
-    # The script itself checks the real Eastern clock and only sends on the run
-    # that's actually landing near 11:55 PM, so this self-corrects across DST changes.
-    - cron: '55 3 * * *'  # 11:55 PM EDT (UTC-4)
-    - cron: '55 4 * * *'  # 11:55 PM EST (UTC-5)
+    # Each job runs twice (once for Eastern Daylight Time, once for Standard Time).
+    # The script itself checks the real Eastern clock and only acts on the run
+    # that's actually landing in the right window, so this self-corrects across
+    # DST changes.
+    - cron: '30 19 * * *' # 3:30 PM EDT (UTC-4) - scheduled pauses
+    - cron: '30 20 * * *' # 3:30 PM EST (UTC-5) - scheduled pauses
+    - cron: '55 3 * * *'  # 11:55 PM EDT (UTC-4) - report + nightly reset
+    - cron: '55 4 * * *'  # 11:55 PM EST (UTC-5) - report + nightly reset
   workflow_dispatch:
     inputs:
       force:
-        description: 'Send right now regardless of time (for testing)'
+        description: 'Send the report right now regardless of time (for testing)'
+        type: boolean
+        default: false
+      force_pause:
+        description: 'Apply the scheduled pauses right now regardless of time (for testing)'
         type: boolean
         default: false
 
@@ -36,4 +43,5 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           FORCE_SEND: ${{ github.event.inputs.force }}
+          FORCE_PAUSE: ${{ github.event.inputs.force_pause }}
         run: node send-report.js
