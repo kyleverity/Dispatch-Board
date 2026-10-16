@@ -148,7 +148,10 @@ async function main(){
   // scheduled runs late (or occasionally drops one). The lastReportDate marker below
   // makes sure extra attempts never send a second report.
   const withinWindow = hour >= 21 && hour <= 23;
-  const withinPauseWindow = minutesIntoDay >= PAUSE_TIME_MINUTES && minutesIntoDay < PAUSE_TIME_MINUTES + 60;
+  // 3:30-5:29 PM Eastern. Several attempts run in this stretch (GitHub often starts
+  // scheduled runs late or drops one); the lastPauseDate marker below makes sure only
+  // the first one pauses, so a later manual unpause isn't undone.
+  const withinPauseWindow = minutesIntoDay >= PAUSE_TIME_MINUTES && minutesIntoDay < PAUSE_TIME_MINUTES + 120;
   const forceSend = process.env.FORCE_SEND === 'true';
   const forcePause = process.env.FORCE_PAUSE === 'true';
   let doReport = forceSend || (withinWindow && isWeekday);
@@ -178,7 +181,24 @@ async function main(){
   const idToken = signInData.idToken;
 
   if(doPause){
-    await applyScheduledPauses(idToken);
+    let alreadyPaused = false;
+    if(!forcePause){
+      const pRes = await fetch(`${DATABASE_URL}/dispatch/lastPauseDate.json?auth=${idToken}`);
+      alreadyPaused = (await pRes.json()) === todayKeyEastern();
+    }
+    if(alreadyPaused){
+      console.log("Today's scheduled pause was already applied — nothing more to do.");
+    } else {
+      await applyScheduledPauses(idToken);
+      if(!forcePause){
+        const mRes = await fetch(`${DATABASE_URL}/dispatch.json?auth=${idToken}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lastPauseDate: todayKeyEastern() })
+        });
+        if(!mRes.ok) throw new Error('Could not record pause marker: ' + (await mRes.text()));
+      }
+    }
   }
 
   // Several attempts are scheduled each night. If an earlier one already sent tonight's
