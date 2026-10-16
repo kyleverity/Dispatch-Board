@@ -1,18 +1,9 @@
 name: Nightly Dispatch Report
 
 on:
-  schedule:
-    # Each job runs twice (once for Eastern Daylight Time, once for Standard Time).
-    # The script itself checks the real Eastern clock and only acts on the run
-    # that's actually landing in the right window, so this self-corrects across
-    # DST changes.
-    - cron: '30 19 * * *' # 3:30 PM EDT (UTC-4) - scheduled pauses
-    - cron: '30 20 * * *' # 3:30 PM EST (UTC-5) - scheduled pauses
-    # Report + nightly reset: attempts every 30 min from ~9 PM to ~midnight Eastern,
-    # because GitHub often starts scheduled runs late or drops one. The script only acts
-    # inside 9:00-11:59 PM Eastern and only the first attempt sends; the rest see it's
-    # already done and exit. (01-04 UTC covers both EDT and EST.)
-    - cron: '5,35 1-4 * * *'
+  # No GitHub schedule on purpose: GitHub drops or delays scheduled runs, so an outside
+  # timer (cron-job.org) starts this workflow on time via workflow_dispatch instead.
+  # The script checks the real Eastern clock and does nothing outside its windows.
   workflow_dispatch:
     inputs:
       force:
