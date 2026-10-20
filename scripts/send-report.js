@@ -99,6 +99,261 @@ async function applyScheduledPauses(idToken){
   }
 }
 
+// Builds the per-tech ticket counts for one board. Everyone on the board is listed
+// (even with 0 tickets), plus anyone named on a ticket who has since been removed.
+function buildLeaderboard(techsObj, rows){
+  const counts = new Map();
+  Object.values(techsObj || {})
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .forEach(t => { if(t && t.name) counts.set(t.name, 0); });
+  rows.forEach(r => {
+    if(r.assignedTo === 'Unassigned') return;
+    counts.set(r.assignedTo, (counts.get(r.assignedTo) || 0) + 1);
+  });
+  const list = Array.from(counts, ([name, count]) => ({ name, count }));
+  // Highest count first; ties keep rotation order (sort is stable).
+  list.sort((a, b) => b.count - a.count);
+  // Ties share a rank (1, 2, 2, 4 ...).
+  list.forEach((p, i) => {
+    p.rank = (i > 0 && list[i - 1].count === p.count) ? list[i - 1].rank : i + 1;
+  });
+  return list;
+}
+
+const MEDALS = { 1: '🥇', 2: '🥈', 3: '🥉' };
+
+function renderLeaderboardText(label, board){
+  const total = board.reduce((n, p) => n + p.count, 0);
+  if(board.length === 0 || total === 0){
+    return `${label} — Tickets by Tech\n  No tickets were dispatched today.`;
+  }
+  const width = Math.max(...board.map(p => p.name.length));
+  const lines = board.map(p =>
+    `  ${String(p.rank).padStart(2)}. ${p.name.padEnd(width)}  ${p.count}`
+  );
+  return `${label} — Tickets by Tech\n${lines.join('\n')}\n  ${'Total'.padEnd(width + 4)}  ${total}`;
+}
+
+function renderLeaderboardHtml(label, board){
+  const total = board.reduce((n, p) => n + p.count, 0);
+  if(board.length === 0 || total === 0){
+    return `<h3>${escapeHtml(label)} — Tickets by Tech</h3><p>No tickets were dispatched today.</p>`;
+  }
+  const max = Math.max(...board.map(p => p.count));
+  return `
+    <h3>${escapeHtml(label)} — Tickets by Tech</h3>
+    <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:sans-serif; font-size:13px; margin-bottom:20px; min-width:360px;">
+      <tr style="text-align:left; border-bottom:2px solid #333;">
+        <th>Rank</th><th>Tech</th><th style="text-align:right;">Tickets</th><th></th>
+      </tr>
+      ${board.map(p => `
+        <tr style="border-bottom:1px solid #ddd;">
+          <td>${p.count > 0 && MEDALS[p.rank] ? MEDALS[p.rank] + ' ' : ''}${p.rank}</td>
+          <td>${escapeHtml(p.name)}</td>
+          <td style="text-align:right; font-weight:bold;">${p.count}</td>
+          <td style="width:140px;"><div style="background:#E8A93A; height:10px; width:${Math.round((p.count / max) * 130)}px;"></div></td>
+        </tr>`).join('')}
+      <tr style="border-top:2px solid #333; font-weight:bold;">
+        <td></td><td>Total</td><td style="text-align:right;">${total}</td><td></td>
+      </tr>
+    </table>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Combined pie chart (everyone on both boards).
+// Email apps can't run scripts or show drawn shapes, so the pie is made as a small
+// PNG image right here (no extra packages needed) and attached inside the email.
+// ---------------------------------------------------------------------------
+const zlib = require('zlib');
+
+const RAMPS = {
+  helpdesk: ['#184f95', '#3987e5', '#256abf', '#6da7ec', '#9ec5f4'],   // blues
+  intake:   ['#a83f10', '#eb6834', '#f3a07a'],                         // oranges
+  both:     ['#0f7a52', '#1baf7a', '#8fdcbc']                          // greens
+};
+
+function hexToRgb(h){
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function colorFor(group, i, n){
+  const ramp = RAMPS[group];
+  if(i < ramp.length) return ramp[i];
+  // More techs than ramp steps: reuse the ramp from the start (labels still tell them apart).
+  return ramp[i % ramp.length];
+}
+
+// One slice per person across both boards. Anyone on both boards (e.g. Chalcie) gets a
+// single slice with their tickets added together.
+function buildPieSlices(boardLeaders){
+  const people = new Map();
+  BOARD_DEFS.forEach(def => {
+    (boardLeaders[def.key] || []).forEach(p => {
+      const e = people.get(p.name) || { name: p.name, count: 0, boards: new Set() };
+      e.count += p.count;
+      e.boards.add(def.key);
+      people.set(p.name, e);
+    });
+  });
+  const groupOf = e => e.boards.size > 1 ? 'both' : (e.boards.has('helpdesk') ? 'helpdesk' : 'intake');
+  const order = ['helpdesk', 'both', 'intake'];
+  const slices = [];
+  order.forEach(g => {
+    const members = Array.from(people.values()).filter(e => groupOf(e) === g && e.count > 0);
+    members.sort((a, b) => b.count - a.count);   // stable: ties keep rotation order
+    members.forEach((e, i) => slices.push({ name: e.name, count: e.count, group: g, color: colorFor(g, i, members.length) }));
+  });
+  return slices;
+}
+
+const PIE_GROUP_LABELS = { helpdesk: 'Help Desk', both: 'Both boards', intake: 'Intake' };
+
+// 5x7 pixel digits so the counts can be drawn on the slices without any font files.
+const DIGITS = {
+  '0': ['01110','10001','10011','10101','11001','10001','01110'],
+  '1': ['00100','01100','00100','00100','00100','00100','01110'],
+  '2': ['01110','10001','00001','00010','00100','01000','11111'],
+  '3': ['11110','00001','00001','01110','00001','00001','11110'],
+  '4': ['00010','00110','01010','10010','11111','00010','00010'],
+  '5': ['11111','10000','11110','00001','00001','10001','01110'],
+  '6': ['00110','01000','10000','11110','10001','10001','01110'],
+  '7': ['11111','00001','00010','00100','01000','01000','01000'],
+  '8': ['01110','10001','10001','01110','10001','10001','01110'],
+  '9': ['01110','10001','10001','01111','00001','00010','01100']
+};
+
+let CRC_TABLE = null;
+function crc32(buf){
+  if(!CRC_TABLE){
+    CRC_TABLE = new Int32Array(256);
+    for(let n = 0; n < 256; n++){
+      let c = n;
+      for(let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      CRC_TABLE[n] = c;
+    }
+  }
+  let crc = -1;
+  for(let i = 0; i < buf.length; i++) crc = CRC_TABLE[(crc ^ buf[i]) & 255] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+function pngChunk(type, data){
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+function encodePng(width, height, rgba){
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;   // 8-bit RGBA
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for(let y = 0; y < height; y++){
+    raw[y * (stride + 1)] = 0;
+    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0))
+  ]);
+}
+
+// Draws the pie at 420x420 (shown at 210 wide in the email, so it stays sharp on
+// high-resolution screens). Slices start at 12 o'clock and run clockwise.
+function renderPiePng(slices){
+  const S = 420, SS = 3, cx = S / 2, cy = S / 2, R = S / 2 - 4, GAP = 3, SCALE = 3;
+  const total = slices.reduce((n, s) => n + s.count, 0);
+  const bounds = [];
+  let acc = 0;
+  slices.forEach(s => { const start = acc; acc += s.count / total * Math.PI * 2; bounds.push([start, acc]); });
+
+  // Text layer: each slice's count, drawn in black or white depending on the slice color.
+  const textMask = new Uint8Array(S * S);   // 0 none, 1 dark text, 2 light text
+  slices.forEach((s, i) => {
+    if(s.count / total < 0.05) return;
+    const label = String(s.count);
+    const w = label.length * 5 + (label.length - 1);
+    const mid = (bounds[i][0] + bounds[i][1]) / 2;
+    const rr = slices.length === 1 ? 0 : R * 0.64;
+    const tx = Math.round(cx + rr * Math.sin(mid) - w * SCALE / 2);
+    const ty = Math.round(cy - rr * Math.cos(mid) - 7 * SCALE / 2);
+    const [r, g, b] = hexToRgb(s.color);
+    const mark = (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? 1 : 2;
+    for(let d = 0; d < label.length; d++){
+      const glyph = DIGITS[label[d]];
+      for(let gy = 0; gy < 7; gy++) for(let gx = 0; gx < 5; gx++){
+        if(glyph[gy][gx] !== '1') continue;
+        for(let py = 0; py < SCALE; py++) for(let px = 0; px < SCALE; px++){
+          const x = tx + (d * 6 + gx) * SCALE + px, y = ty + gy * SCALE + py;
+          if(x >= 0 && x < S && y >= 0 && y < S) textMask[y * S + x] = mark;
+        }
+      }
+    }
+  });
+
+  const rgba = Buffer.alloc(S * S * 4);
+  const colors = slices.map(s => hexToRgb(s.color));
+  for(let y = 0; y < S; y++){
+    for(let x = 0; x < S; x++){
+      let rs = 0, gs = 0, bs = 0, hits = 0;
+      for(let sy = 0; sy < SS; sy++){
+        for(let sx = 0; sx < SS; sx++){
+          const fx = x + (sx + 0.5) / SS, fy = y + (sy + 0.5) / SS;
+          const dx = fx - cx, dy = fy - cy;
+          const r = Math.sqrt(dx * dx + dy * dy);
+          if(r > R) continue;
+          hits++;
+          const t = textMask[y * S + x];
+          if(t){
+            if(t === 1){ rs += 11; gs += 11; bs += 11; } else { rs += 255; gs += 255; bs += 255; }
+            continue;
+          }
+          let phi = Math.atan2(dx, -dy);
+          if(phi < 0) phi += Math.PI * 2;
+          let idx = bounds.findIndex(b => phi < b[1]);
+          if(idx === -1) idx = slices.length - 1;
+          let gap = false;
+          if(slices.length > 1){
+            const nearest = Math.min(phi - bounds[idx][0], bounds[idx][1] - phi);
+            const wrapNearest = Math.min(nearest, (idx === 0 ? Math.PI * 2 - phi : Infinity), (idx === slices.length - 1 ? phi : Infinity));
+            gap = Math.min(nearest, wrapNearest) * r < GAP / 2;
+          }
+          if(gap){ rs += 255; gs += 255; bs += 255; }
+          else { rs += colors[idx][0]; gs += colors[idx][1]; bs += colors[idx][2]; }
+        }
+      }
+      const o = (y * S + x) * 4;
+      if(hits){
+        rgba[o] = Math.round(rs / hits); rgba[o + 1] = Math.round(gs / hits); rgba[o + 2] = Math.round(bs / hits);
+        rgba[o + 3] = Math.round(255 * hits / (SS * SS));
+      }
+    }
+  }
+  return encodePng(S, S, rgba);
+}
+
+function renderPieLegendHtml(slices){
+  const total = slices.reduce((n, s) => n + s.count, 0);
+  return ['helpdesk', 'both', 'intake'].map(g => {
+    const rows = slices.filter(s => s.group === g);
+    if(rows.length === 0) return '';
+    return `
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#52514e; margin:10px 0 3px;">${PIE_GROUP_LABELS[g]}</div>
+      <table cellpadding="0" cellspacing="0" style="border-collapse:collapse; font-size:13px; min-width:210px;">
+        ${rows.map(s => `
+          <tr>
+            <td style="padding:2px 8px 2px 0;"><div style="width:11px; height:11px; background:${s.color};"></div></td>
+            <td style="padding:2px 14px 2px 0;">${escapeHtml(s.name)}</td>
+            <td style="padding:2px 12px 2px 0; text-align:right; font-weight:bold;">${s.count}</td>
+            <td style="padding:2px 0; text-align:right; color:#52514e;">${Math.round(s.count / total * 100)}%</td>
+          </tr>`).join('')}
+      </table>`;
+  }).join('');
+}
+
 function renderBoardSectionText(label, rows){
   if(rows.length === 0){
     return `${label}\n  No tickets were dispatched today.`;
@@ -218,6 +473,7 @@ async function main(){
 
   // Fetch each board's tickets
   const boardRows = {};
+  const boardLeaders = {};
   for(const def of BOARD_DEFS){
     const res = await fetch(`${DATABASE_URL}/${def.ticketsPath}.json?auth=${idToken}`);
     const obj = (await res.json()) || {};
@@ -229,6 +485,9 @@ async function main(){
       assignedTo: t.assignedToName || 'Unassigned',
       time: timeLabelFor(t.createdAt)
     }));
+    const techsRes = await fetch(`${DATABASE_URL}/${def.techsPath}.json?auth=${idToken}`);
+    const techsObj = (await techsRes.json()) || {};
+    boardLeaders[def.key] = buildLeaderboard(techsObj, boardRows[def.key]);
   }
 
   const dateLabel = new Intl.DateTimeFormat('en-US', {
@@ -236,8 +495,33 @@ async function main(){
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   }).format(new Date());
 
-  const bodyText = BOARD_DEFS.map(def => renderBoardSectionText(def.label, boardRows[def.key])).join('\n\n');
-  const bodyHtml = BOARD_DEFS.map(def => renderBoardSectionHtml(def.label, boardRows[def.key])).join('');
+  const leaderText = BOARD_DEFS.map(def => renderLeaderboardText(def.label, boardLeaders[def.key])).join('\n\n');
+  let leaderHtml = BOARD_DEFS.map(def => renderLeaderboardHtml(def.label, boardLeaders[def.key])).join('');
+
+  // Combined pie of everyone on both boards, shown to the right of the two tables.
+  // If anything goes wrong drawing it, the report still goes out with just the tables.
+  const attachments = [];
+  try {
+    const slices = buildPieSlices(boardLeaders);
+    if(slices.length > 0){
+      attachments.push({ filename: 'tickets-pie.png', content: renderPiePng(slices), cid: 'ticketspie', contentType: 'image/png' });
+      leaderHtml = `
+        <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+          <td valign="top">${leaderHtml}</td>
+          <td valign="top" style="padding-left:36px;">
+            <h3 style="font-family:sans-serif;">Everyone — Share of Tickets</h3>
+            <img src="cid:ticketspie" width="210" height="210" alt="Share of tickets by tech" style="display:block;" />
+            <div style="font-family:sans-serif;">${renderPieLegendHtml(slices)}</div>
+          </td>
+        </tr></table>`;
+    }
+  } catch(err){
+    console.log('Could not draw the pie chart — sending the report without it: ' + err.message);
+  }
+  const detailText = BOARD_DEFS.map(def => renderBoardSectionText(def.label, boardRows[def.key])).join('\n\n');
+  const detailHtml = BOARD_DEFS.map(def => renderBoardSectionHtml(def.label, boardRows[def.key])).join('');
+  const bodyText = `LEADERBOARD\n\n${leaderText}\n\nALL TICKETS\n\n${detailText}`;
+  const bodyHtml = `<h2 style="font-family:sans-serif; margin-bottom:4px;">Leaderboard</h2>${leaderHtml}<h2 style="font-family:sans-serif; margin-bottom:4px;">All Tickets</h2>${detailHtml}`;
 
   const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -252,7 +536,8 @@ async function main(){
     to: REPORT_RECIPIENT,
     subject: `Dispatch Report — ${dateLabel}`,
     text: `Dispatch Report — ${dateLabel}\n\n${bodyText}`,
-    html: `<h2>Dispatch Report — ${dateLabel}</h2>${bodyHtml}`
+    html: `<h2>Dispatch Report — ${dateLabel}</h2>${bodyHtml}`,
+    attachments
   });
 
   console.log('Report sent to ' + REPORT_RECIPIENT);
