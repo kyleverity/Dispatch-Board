@@ -14,6 +14,18 @@ on:
         description: 'Apply the scheduled pauses right now regardless of time (for testing)'
         type: boolean
         default: false
+      mode:
+        description: 'Which report to run (leave on nightly except for the weekly / monthly timers)'
+        type: choice
+        options:
+          - nightly
+          - weekly
+          - monthly
+        default: nightly
+      no_pie:
+        description: 'Leave the pie chart image out of the report (use if a mail filter blocks it)'
+        type: boolean
+        default: false
 
 jobs:
   send-report:
@@ -38,4 +50,6 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           FORCE_SEND: ${{ github.event.inputs.force }}
           FORCE_PAUSE: ${{ github.event.inputs.force_pause }}
+          DISABLE_PIE: ${{ github.event.inputs.no_pie }}
+          REPORT_MODE: ${{ github.event.inputs.mode }}
         run: node send-report.js
