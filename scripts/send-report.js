@@ -386,7 +386,276 @@ function renderBoardSectionHtml(label, rows){
   `;
 }
 
+// ---------------------------------------------------------------------------
+// History + weekly / monthly reports
+// Every weeknight, before the board is cleared, the day's tickets are saved under
+// dispatch/history/<date>. The weekly (Monday) and monthly (1st) reports are built
+// from that saved history.
+// ---------------------------------------------------------------------------
+async function signIn(){
+  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: process.env.DISPATCH_EMAIL,
+      password: process.env.DISPATCH_PASSWORD,
+      returnSecureToken: true
+    })
+  });
+  const data = await res.json();
+  if(!data.idToken) throw new Error('Firebase sign-in failed: ' + JSON.stringify(data));
+  return data.idToken;
+}
+
+async function saveHistory(idToken, dateKey, boardRows){
+  const record = { savedAt: new Date().toISOString() };
+  BOARD_DEFS.forEach(def => {
+    const rows = boardRows[def.key] || [];
+    if(rows.length > 0){
+      record[def.key] = rows.map(r => ({
+        num: r.num, title: r.title, priority: r.priority, assignedTo: r.assignedTo, createdAt: r.createdAt
+      }));
+    }
+  });
+  const res = await fetch(`${DATABASE_URL}/dispatch/history/${dateKey}.json?auth=${idToken}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record)
+  });
+  if(!res.ok) throw new Error(await res.text());
+  console.log(`Saved ${dateKey} to the history.`);
+}
+
+function addDays(key, n){
+  const d = new Date(key + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function dayOfWeek(key){ return new Date(key + 'T12:00:00Z').getUTCDay(); }   // 0 = Sunday
+function fmtDate(key, opts){
+  return new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: 'UTC' }, opts)).format(new Date(key + 'T12:00:00Z'));
+}
+
+// Which stretch of days a weekly / monthly run covers, or null if today isn't a day it
+// should run. Weekly runs Mon-Wed and monthly runs on the 1st-3rd, so if the first
+// attempt is missed, a later day still catches up (the marker stops any double send).
+function periodFor(mode, todayKey, force){
+  if(mode === 'weekly'){
+    const dow = dayOfWeek(todayKey);
+    if(!force && !(dow >= 1 && dow <= 3)) return null;
+    const end = addDays(todayKey, -(dow === 0 ? 7 : dow));   // the most recent Sunday
+    const start = addDays(end, -6);                            // ...and the Monday before it
+    return {
+      start, end, marker: 'lastWeeklyReport', markerValue: start,
+      title: 'Weekly Dispatch Report',
+      range: fmtDate(start, { month: 'short', day: 'numeric' }) + ' – ' + fmtDate(end, { month: 'short', day: 'numeric', year: 'numeric' })
+    };
+  }
+  const dom = parseInt(todayKey.slice(8, 10), 10);
+  if(!force && dom > 3) return null;
+  const end = addDays(todayKey.slice(0, 8) + '01', -1);       // last day of last month
+  const start = end.slice(0, 8) + '01';
+  return {
+    start, end, marker: 'lastMonthlyReport', markerValue: start.slice(0, 7),
+    title: 'Monthly Dispatch Report',
+    range: fmtDate(start, { month: 'long', year: 'numeric' })
+  };
+}
+
+// Reads the saved days for a period. Two places are checked: "history" (saved nightly by
+// this script) and "historyImported" (days loaded once from old report emails). If a day
+// is in both, the nightly one wins.
+async function fetchHistoryNode(idToken, node, start, end){
+  const q = 'orderBy=' + encodeURIComponent('"$key"') + '&startAt=' + encodeURIComponent('"' + start + '"') + '&endAt=' + encodeURIComponent('"' + end + '"');
+  let res = await fetch(`${DATABASE_URL}/dispatch/${node}.json?auth=${idToken}&${q}`);
+  if(!res.ok) res = await fetch(`${DATABASE_URL}/dispatch/${node}.json?auth=${idToken}`);   // fall back to everything
+  const data = (res.ok ? await res.json() : null) || {};
+  const out = {};
+  Object.keys(data).filter(k => k >= start && k <= end).forEach(k => { out[k] = data[k]; });
+  return out;
+}
+async function fetchHistory(idToken, start, end){
+  const imported = await fetchHistoryNode(idToken, 'historyImported', start, end);
+  const nightly = await fetchHistoryNode(idToken, 'history', start, end);
+  const merged = Object.assign({}, imported, nightly);
+  const out = {};
+  Object.keys(merged).sort().forEach(k => { out[k] = merged[k]; });
+  return out;
+}
+
+async function runPeriodReport(mode){
+  const force = process.env.FORCE_SEND === 'true';
+  const todayKey = todayKeyEastern();
+  const period = periodFor(mode, todayKey, force);
+  if(!period){
+    console.log(`Skipping this run — today (${todayKey}) isn't a ${mode} report day.`);
+    return;
+  }
+  if(force) console.log('Force-send enabled — sending now without recording it as done.');
+
+  const idToken = await signIn();
+
+  if(!force){
+    const mRes = await fetch(`${DATABASE_URL}/dispatch/${period.marker}.json?auth=${idToken}`);
+    const done = await mRes.json();
+    if(done === period.markerValue){
+      console.log(`The ${mode} report for ${period.range} was already sent — nothing more to do.`);
+      return;
+    }
+  }
+
+  const history = await fetchHistory(idToken, period.start, period.end);
+  const dates = Object.keys(history);
+
+  // Everyone currently on each board (so people with 0 tickets still show up)
+  const techsByBoard = {};
+  for(const def of BOARD_DEFS){
+    const res = await fetch(`${DATABASE_URL}/${def.techsPath}.json?auth=${idToken}`);
+    techsByBoard[def.key] = (await res.json()) || {};
+  }
+
+  // Flatten the saved days into one list per board, and keep a per-day breakdown
+  const boardRows = {};
+  BOARD_DEFS.forEach(def => { boardRows[def.key] = []; });
+  const perDay = {};
+  dates.forEach(date => {
+    perDay[date] = {};
+    BOARD_DEFS.forEach(def => {
+      const list = Object.values(history[date][def.key] || {})
+        .sort((a, b) => (a.num || 0) - (b.num || 0))
+        .map(t => ({
+          num: t.num,
+          title: t.title || '',
+          priority: t.priority || '',
+          assignedTo: t.assignedTo || 'Unassigned',
+          time: timeLabelFor(t.createdAt)
+        }));
+      perDay[date][def.key] = list;
+      list.forEach(r => boardRows[def.key].push(r));
+    });
+  });
+
+  const boardLeaders = {};
+  BOARD_DEFS.forEach(def => { boardLeaders[def.key] = buildLeaderboard(techsByBoard[def.key], boardRows[def.key]); });
+
+  // Every weekday in the period should have a saved record; call out any that don't
+  const missing = [];
+  for(let d = period.start; d <= period.end; d = addDays(d, 1)){
+    const dow = dayOfWeek(d);
+    if(dow >= 1 && dow <= 5 && !history[d]) missing.push(d);
+  }
+  const allDates = [];
+  for(let d = period.start; d <= period.end; d = addDays(d, 1)){
+    const dow = dayOfWeek(d);
+    if((dow >= 1 && dow <= 5) || history[d]) allDates.push(d);
+  }
+
+  const totals = {};
+  BOARD_DEFS.forEach(def => { totals[def.key] = boardRows[def.key].length; });
+  const grand = BOARD_DEFS.reduce((n, def) => n + totals[def.key], 0);
+  const longLabel = d => fmtDate(d, { weekday: 'short', month: 'short', day: 'numeric' });
+  const summary = `${grand} ticket${grand === 1 ? '' : 's'} over ${dates.length} saved day${dates.length === 1 ? '' : 's'} (` +
+    BOARD_DEFS.map(def => `${def.label}: ${totals[def.key]}`).join(', ') + ')';
+  const missingNote = missing.length
+    ? `No saved data for: ${missing.map(longLabel).join(', ')}.`
+    : '';
+
+  // --- Leaderboard block (same look as the nightly report) -----------------------
+  const attachments = [];
+  let leaderHtml = BOARD_DEFS.map(def => renderLeaderboardHtml(def.label, boardLeaders[def.key])).join('');
+  try {
+    const slices = process.env.DISABLE_PIE === 'true' ? [] : buildPieSlices(boardLeaders);
+    if(slices.length > 0){
+      attachments.push({ filename: 'tickets-pie.png', content: renderPiePng(slices), cid: 'ticketspie', contentType: 'image/png' });
+      leaderHtml = `
+        <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+          <td valign="top">${leaderHtml}</td>
+          <td valign="top" style="padding-left:36px;">
+            <h3 style="font-family:sans-serif;">Everyone — Share of Tickets</h3>
+            <img src="cid:ticketspie" width="210" height="210" alt="Share of tickets by tech" style="display:block;" />
+            <div style="font-family:sans-serif;">${renderPieLegendHtml(slices)}</div>
+          </td>
+        </tr></table>`;
+    }
+  } catch(err){
+    console.log('Could not draw the pie chart — sending the report without it: ' + err.message);
+  }
+
+  // --- Tickets per day ---------------------------------------------------------------
+  const dayRowsHtml = allDates.map(d => {
+    if(!history[d]){
+      return `<tr style="border-bottom:1px solid #ddd; color:#888;"><td>${escapeHtml(longLabel(d))}</td><td colspan="${BOARD_DEFS.length + 1}">no data saved</td></tr>`;
+    }
+    const counts = BOARD_DEFS.map(def => perDay[d][def.key].length);
+    return `<tr style="border-bottom:1px solid #ddd;"><td>${escapeHtml(longLabel(d))}</td>${counts.map(c => `<td style="text-align:right;">${c}</td>`).join('')}<td style="text-align:right; font-weight:bold;">${counts.reduce((a, b) => a + b, 0)}</td></tr>`;
+  }).join('');
+  const perDayHtml = `
+    <table cellpadding="6" cellspacing="0" style="border-collapse:collapse; font-family:sans-serif; font-size:13px; margin-bottom:20px; min-width:360px;">
+      <tr style="text-align:left; border-bottom:2px solid #333;"><th>Day</th>${BOARD_DEFS.map(def => `<th style="text-align:right;">${escapeHtml(def.label)}</th>`).join('')}<th style="text-align:right;">Total</th></tr>
+      ${dayRowsHtml}
+      <tr style="border-top:2px solid #333; font-weight:bold;"><td>Total</td>${BOARD_DEFS.map(def => `<td style="text-align:right;">${totals[def.key]}</td>`).join('')}<td style="text-align:right;">${grand}</td></tr>
+    </table>`;
+  const perDayText = allDates.map(d => {
+    if(!history[d]) return `  ${longLabel(d)}: no data saved`;
+    return `  ${longLabel(d)}: ` + BOARD_DEFS.map(def => `${def.label} ${perDay[d][def.key].length}`).join(', ');
+  }).join('\n');
+
+  // --- Every ticket, grouped by day --------------------------------------------------
+  const detailHtml = dates.map(d => {
+    const sections = BOARD_DEFS.map(def => renderBoardSectionHtml(`${def.label}`, perDay[d][def.key])).join('');
+    return `<h2 style="font-family:sans-serif; margin:22px 0 0; padding-top:10px; border-top:2px solid #333;">${escapeHtml(fmtDate(d, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }))}</h2>${sections}`;
+  }).join('') || '<p>No tickets were saved for this period.</p>';
+  const detailText = dates.map(d =>
+    `${fmtDate(d, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}\n\n` +
+    BOARD_DEFS.map(def => renderBoardSectionText(def.label, perDay[d][def.key])).join('\n\n')
+  ).join('\n\n') || 'No tickets were saved for this period.';
+
+  const leaderText = BOARD_DEFS.map(def => renderLeaderboardText(def.label, boardLeaders[def.key])).join('\n\n');
+  const subject = `${period.title} — ${period.range}`;
+  const bodyText = `${subject}\n${summary}\n${missingNote ? missingNote + '\n' : ''}\nLEADERBOARD\n\n${leaderText}\n\nTICKETS PER DAY\n\n${perDayText}\n\nALL TICKETS\n\n${detailText}`;
+  const bodyHtml = `
+    <div style="font-family:sans-serif;">
+      <h2 style="margin-bottom:4px;">${escapeHtml(subject)}</h2>
+      <p style="margin:0 0 4px; font-size:14px;">${escapeHtml(summary)}</p>
+      ${missingNote ? `<p style="margin:0 0 4px; font-size:13px; color:#a33;">${escapeHtml(missingNote)}</p>` : ''}
+      <h2 style="margin-bottom:4px;">Leaderboard</h2>${leaderHtml}
+      <h2 style="margin-bottom:4px;">Tickets Per Day</h2>${perDayHtml}
+      <h2 style="margin-bottom:0;">All Tickets</h2>${detailHtml}
+    </div>`;
+
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD }
+  });
+  await transporter.sendMail({
+    from: `Dispatch Tracker <${process.env.GMAIL_USER}>`,
+    to: REPORT_RECIPIENT,
+    subject,
+    text: bodyText,
+    html: bodyHtml,
+    attachments
+  });
+  console.log(`${subject} sent to ${REPORT_RECIPIENT}`);
+
+  if(!force){
+    const body = {}; body[period.marker] = period.markerValue;
+    const markRes = await fetch(`${DATABASE_URL}/dispatch.json?auth=${idToken}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if(!markRes.ok) throw new Error('Could not record that the report was sent: ' + (await markRes.text()));
+  }
+}
+
 async function main(){
+  // Weekly / monthly reports are started by their own timer jobs with a "mode" setting.
+  const reportMode = process.env.REPORT_MODE || 'nightly';
+  if(reportMode === 'weekly' || reportMode === 'monthly'){
+    await runPeriodReport(reportMode);
+    return;
+  }
+
   // This workflow is scheduled twice per job (to cover both EST and EDT) so it never
   // drifts an hour off after Daylight Saving changes. Only the run that's actually
   // landing in the right Eastern-time window does anything:
@@ -483,11 +752,22 @@ async function main(){
       title: t.title || '',
       priority: t.priority || '',
       assignedTo: t.assignedToName || 'Unassigned',
+      createdAt: t.createdAt,
       time: timeLabelFor(t.createdAt)
     }));
     const techsRes = await fetch(`${DATABASE_URL}/${def.techsPath}.json?auth=${idToken}`);
     const techsObj = (await techsRes.json()) || {};
     boardLeaders[def.key] = buildLeaderboard(techsObj, boardRows[def.key]);
+  }
+
+  // Keep a permanent copy of tonight's tickets for the weekly and monthly reports.
+  // (Saved before the email goes out, so a mail problem can't lose the day's data.)
+  if(withinWindow && isWeekday){
+    try {
+      await saveHistory(idToken, todayKeyEastern(), boardRows);
+    } catch(err){
+      console.log("WARNING: couldn't save today's tickets to the history — " + err.message);
+    }
   }
 
   const dateLabel = new Intl.DateTimeFormat('en-US', {
@@ -500,9 +780,11 @@ async function main(){
 
   // Combined pie of everyone on both boards, shown to the right of the two tables.
   // If anything goes wrong drawing it, the report still goes out with just the tables.
+  // The pie is ON by default. It can be switched off for one run with the "no_pie" box
+  // (handy if a mail filter ever rejects the image attachment again).
   const attachments = [];
   try {
-    const slices = buildPieSlices(boardLeaders);
+    const slices = process.env.DISABLE_PIE === 'true' ? [] : buildPieSlices(boardLeaders);
     if(slices.length > 0){
       attachments.push({ filename: 'tickets-pie.png', content: renderPiePng(slices), cid: 'ticketspie', contentType: 'image/png' });
       leaderHtml = `
